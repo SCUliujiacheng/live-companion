@@ -1,0 +1,9 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>隔离测试直播间</title><style>body{background:#162028;color:#eee;padding:30px;font:18px sans-serif}textarea{width:400px;height:70px}.chat-item{padding:8px}</style>
+<h1>隔离测试直播间（本机模拟）</h1><button id="play">播放测试音频</button><div id="chat-items" class="chat-items"></div>
+<div id="chat-control-panel-vm"><textarea class="chat-input" placeholder="发个弹幕呗~"></textarea><button class="send-btn">发送</button></div>
+<script>
+let context,gain;window.sent=[];
+document.querySelector('#play').onclick=async()=>{context=new AudioContext();const oscillator=context.createOscillator();gain=context.createGain();gain.gain.value=.03;oscillator.frequency.value=440;oscillator.connect(gain).connect(context.destination);oscillator.start();await context.resume();};
+window.addChat=(user,text)=>{const item=document.createElement('div');item.className='chat-item danmaku-item';item.dataset.uname=user;item.dataset.danmaku=text;item.textContent=user+'：'+text;document.querySelector('#chat-items').append(item);};
+document.querySelector('.send-btn').onclick=()=>{const input=document.querySelector('textarea'),text=input.value;window.sent.push(text);input.value='';addChat('测试观众',text);};
+</script></html>

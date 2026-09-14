@@ -152,3 +152,10 @@ test('a track ending while AudioContext.resume is pending cannot leak a capture 
   assert.equal(state.closeCount, 1);
   assert.equal(state.stoppedTracks, 1);
 });
+
+test('desktop capture can avoid a second audible playback connection', async t => {
+  const state = fakeAudio(t);
+  const capture = await startCapture('authorized-tab', {}, { monitorPlayback: false });
+  assert.equal(state.connections.length, 1);
+  capture.stop();
+});

@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "直播搭子 · 声音与弹幕陪聊",
-  "version": "0.1.1",
-  "version_name": "0.1.1 beta 1",
+  "version": "0.2.0",
+  "version_name": "0.2.0 beta 1",
   "description": "结合 B站主播声音和弹幕生成短回复，支持可取消的自动发送和自定义 AI API。",
   "minimum_chrome_version": "116",
   "permissions": ["activeTab", "scripting", "storage", "sidePanel", "tabCapture", "offscreen"],

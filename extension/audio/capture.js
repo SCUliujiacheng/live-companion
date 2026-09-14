@@ -1,6 +1,6 @@
 import { encodeWav, VoiceSegmenter } from './wav.js';
 
-export async function startCapture(streamId, callbacks = {}) {
+export async function startCapture(streamId, callbacks = {}, options = { monitorPlayback: true }) {
   if (typeof streamId !== 'string' || !streamId) throw new Error('缺少直播标签页音频授权，请重新点击开始');
   let stream;
   let context;
@@ -74,7 +74,10 @@ export async function startCapture(streamId, callbacks = {}) {
     segmenter = new VoiceSegmenter(context.sampleRate);
     source = context.createMediaStreamSource(stream);
     worklet = new AudioWorkletNode(context, 'companion-pcm', { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1] });
-    source.connect(context.destination);
+    // Chrome extension tab capture needs this playback restoration. Electron's
+    // getMediaSourceId path appears to preserve local echo in Chromium, so its
+    // caller can disable monitoring to avoid playing the same audio twice.
+    if (options.monitorPlayback !== false) source.connect(context.destination);
     source.connect(worklet);
     worklet.connect(context.destination);
     const clockOffset = Date.now() - context.currentTime * 1_000;

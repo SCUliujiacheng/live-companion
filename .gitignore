@@ -3,6 +3,8 @@ node_modules/
 output/
 *.log
 dist/
+dist-desktop/
+desktop/generated/
 .DS_Store
 Thumbs.db
 *.pem

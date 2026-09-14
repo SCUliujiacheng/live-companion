@@ -1,0 +1,37 @@
+appId: io.github.sculiujiacheng.livecompanion
+productName: 直播搭子
+directories:
+  output: dist-desktop
+files:
+  - desktop/main.js
+  - desktop/controller.js
+  - desktop/storage.js
+  - desktop/preload.cjs
+  - desktop/generated/room-preload.cjs
+  - desktop/ui/**
+  - extension/core/**
+  - extension/audio/**
+  - extension/icons/*.png
+  - extension/sidepanel.js
+  - extension/sidepanel.css
+  - LICENSE
+  - package.json
+asar: true
+compression: normal
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+    - target: portable
+      arch: [x64]
+  signAndEditExecutable: false
+nsis:
+  oneClick: true
+  perMachine: false
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  runAfterFinish: true
+  artifactName: LiveCompanion-Setup-${version}-${arch}.${ext}
+portable:
+  artifactName: LiveCompanion-Portable-${version}-${arch}.${ext}
+publish: null

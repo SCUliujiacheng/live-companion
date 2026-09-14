@@ -1,0 +1,24 @@
+<!doctype html><html><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none';script-src 'unsafe-inline'"><title>Local audio smoke source</title>
+<body><script>
+window.tone = null;
+window.startTone = async frequency => {
+  const context = new AudioContext();
+  const oscillator = context.createOscillator();
+  const gain = context.createGain();
+  const analyser = context.createAnalyser();
+  analyser.fftSize = 2048;
+  oscillator.frequency.value = frequency;
+  gain.gain.value = 0.035;
+  oscillator.connect(gain); gain.connect(analyser); analyser.connect(context.destination);
+  oscillator.start();
+  await context.resume();
+  window.tone = { context, oscillator, gain, analyser, frequency };
+  return context.state;
+};
+window.toneState = () => {
+  const samples = new Float32Array(tone.analyser.fftSize);
+  tone.analyser.getFloatTimeDomainData(samples);
+  let energy = 0; for (const sample of samples) energy += sample * sample;
+  return { state: tone.context.state, frequency: tone.frequency, gain: tone.gain.gain.value, rms: Math.sqrt(energy / samples.length) };
+};
+</script></body></html>

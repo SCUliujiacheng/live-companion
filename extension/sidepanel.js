@@ -2,6 +2,7 @@ import { DEFAULT_SETTINGS, normalizeSettings, permissionOrigins } from './core/s
 
 const $ = (id) => document.getElementById(id);
 const hasRuntime = Boolean(globalThis.chrome?.runtime?.id && globalThis.chrome?.runtime?.sendMessage);
+const isDesktop = Boolean(globalThis.desktopAPI);
 const defaults = DEFAULT_SETTINGS;
 let state = { status: 'idle', room: null, mode: 'review', singing: false, level: 0, events: [], logs: [], pending: null, sentCount: 0, activity: '' };
 let savedSettings = { ...defaults, chat: { ...defaults.chat }, transcription: { ...defaults.transcription } };
@@ -25,7 +26,7 @@ async function command(type, payload = {}) {
   try {
     result = await chrome.runtime.sendMessage({ target: 'background', type, ...payload });
   } catch {
-    throw new Error('无法连接扩展后台。请重新打开侧边栏，或在扩展页面重新加载。');
+    throw new Error(isDesktop ? '无法连接应用后台。请重新打开应用后重试。' : '无法连接扩展后台。请重新打开侧边栏，或在扩展页面重新加载。');
   }
   if (!result?.ok) throw new Error(result?.error || '操作未完成，请查看运行记录后重试。');
   return result;
@@ -110,7 +111,7 @@ async function saveFromGesture(testKind = null) {
     if (!(await permissionPromise)) throw new Error('未获得 API 站点访问权限，设置未保存。');
     await command('save-settings', { settings });
     savedSettings = { ...settings, chat: { ...settings.chat }, transcription: { ...settings.transcription } };
-    announce(settings.rememberKeys ? '设置已保存。密钥将保留在这台电脑。' : '设置已保存。密钥仅在本次浏览器会话中保留。');
+    announce(settings.rememberKeys ? (isDesktop ? '设置已保存。密钥已使用系统加密保存在这台电脑。' : '设置已保存。密钥将保留在这台电脑。') : isDesktop ? '设置已保存。密钥仅在本次应用会话中保留。' : '设置已保存。密钥仅在本次浏览器会话中保留。');
     if (testKind) {
       output.textContent = testKind === 'chat' ? '正在测试聊天模型…' : '正在检查转写服务连接…';
       const result = await command('test-api', { kind: testKind });
@@ -295,7 +296,7 @@ function renderState(next) {
   $('room-title').textContent = roomTitle || (state.room?.roomId ? `直播间 ${state.room.roomId}` : '准备好，陪主播聊会儿');
   $('room-detail').textContent = state.room?.roomId
     ? `房间 ${state.room.roomId} · ${['starting', 'listening', 'paused'].includes(state.status) ? (state.mode === 'auto' ? '自动接话' : '发送前由你确认') : '已选中直播间'}`
-    : '打开 B 站直播间，点击浏览器工具栏的搭子图标。';
+    : isDesktop ? '在顶部粘贴直播间链接，先在左侧登录 B 站账号。' : '打开 B 站直播间，点击浏览器工具栏的搭子图标。';
   $('activity-text').textContent = state.singing ? '听歌中 · 暂停生成和发送' : state.activity || state.pausedReason || ({ idle: '等待开始监听', starting: '正在连接直播声音…', listening: '正在听主播说话', paused: '已暂停，继续后再接话', error: '请检查运行记录' }[state.status] || '等待开始监听');
   $('audio-meter').dataset.active = String(state.status === 'listening' && state.level > 0.01);
   const level = Math.max(0, Math.min(1, Number(state.level) || 0));
