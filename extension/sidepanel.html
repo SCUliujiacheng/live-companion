@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>直播搭子</title>
+  <link rel="stylesheet" href="sidepanel.css">
+  <script src="sidepanel.js" type="module"></script>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="app-header">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+        <div><h1>直播搭子</h1><p>听得懂，也接得住。</p></div>
+      </div>
+      <button class="icon-button" id="open-settings" type="button" aria-label="打开 API 与聊天设置" title="设置">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7Z"/><path d="m9.1 3-.6 2.2-2 .9-2.1-.5-2 3.4L4 10.7v2.6l-1.6 1.7 2 3.4 2.1-.5 2 .9.6 2.2h3.8l.6-2.2 2-.9 2.1.5 2-3.4-1.6-1.7v-2.6L19.6 9l-2-3.4-2.1.5-2-.9-.6-2.2Z" transform="translate(1 0)"/></svg>
+      </button>
+    </header>
+
+    <div id="preview-banner" class="notice preview-notice" hidden>界面预览 · 加载浏览器扩展后可连接直播间</div>
+    <div id="feedback" class="notice" role="status" hidden></div>
+
+    <main id="companion-view">
+      <section class="room-card" aria-labelledby="room-title">
+        <div class="eyebrow-row"><span class="eyebrow">BILIBILI LIVE</span><span id="status-badge" class="status-badge" data-status="idle"><i></i><span id="status-label">未开始</span></span></div>
+        <h2 id="room-title">准备好，陪主播聊会儿</h2>
+        <p id="room-detail">打开 B 站直播间，点击浏览器工具栏的搭子图标。</p>
+        <div class="activity-row"><span class="audio-meter" id="audio-meter" aria-label="直播声音强度"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span><span id="activity-text">等待开始监听</span></div>
+      </section>
+
+      <section class="controls-section" aria-label="陪聊控制">
+        <fieldset class="mode-picker" id="mode-picker">
+          <legend class="sr-only">发言模式</legend>
+          <label><input type="radio" name="mode" value="review" checked><span>我来确认</span></label>
+          <label><input type="radio" name="mode" value="auto"><span>自动接话 <b>AI</b></span></label>
+        </fieldset>
+        <p class="mode-description" id="mode-description">搭子准备好回复，由你决定何时发送。</p>
+        <div class="main-controls">
+          <button type="button" id="start-button" class="button primary"><span class="play-icon" aria-hidden="true"></span>开始陪聊</button>
+          <button type="button" id="pause-button" class="button primary" hidden>暂停陪聊</button>
+          <button type="button" id="stop-button" class="button secondary stop-button" hidden>结束</button>
+        </div>
+        <label class="singing-control"><span><strong>主播正在唱歌</strong><small>打开后暂停生成和发送，专心听歌</small></span><input id="singing-toggle" type="checkbox" role="switch"><span class="switch-track" aria-hidden="true"></span></label>
+        <p class="privacy-note">音频片段和最近弹幕将发送给你填写的 AI 服务。</p>
+      </section>
+
+      <section class="candidate-card" id="candidate-card" aria-labelledby="candidate-heading">
+        <div class="section-heading"><h2 id="candidate-heading"><span class="sparkle" aria-hidden="true">✦</span> 下一句</h2><span id="candidate-state" class="subtle-tag">等待话题</span></div>
+        <div id="candidate-empty" class="candidate-empty"><p>好好听，再接话。</p><span>有合适的话题才开口，安静也是一种陪伴。</span></div>
+        <div id="candidate-content" hidden>
+          <blockquote id="candidate-text"></blockquote>
+          <p id="candidate-reason" class="candidate-reason"></p>
+          <div class="candidate-actions"><button class="button quiet" id="cancel-button" type="button">这句不发</button><button class="button send-button" id="send-now-button" type="button">现在发送 <span aria-hidden="true">↗</span></button></div>
+        </div>
+      </section>
+
+      <section class="context-section" aria-labelledby="context-heading">
+        <div class="section-heading"><h2 id="context-heading">正在聊什么</h2><span class="context-count" id="context-count">0 条上下文</span></div>
+        <div class="context-stream" id="context-stream" tabindex="0" aria-label="最近主播语音和弹幕">
+          <div class="context-empty" id="context-empty"><span class="empty-lines" aria-hidden="true"><i></i><i></i><i></i></span><p>直播间的声音，会出现在这里</p><span>开始后整理主播语音与新弹幕<br>帮搭子跟上正在聊的话题</span></div>
+        </div>
+      </section>
+
+      <details class="activity-details"><summary><span>运行记录</span><span id="sent-count">已发送 0 条</span></summary><ol id="log-list"><li class="muted">本次会话还没有运行记录。</li></ol></details>
+      <footer class="app-footer"><span class="footer-dot"></span>你的 AI 陪聊助手 <span>·</span> 随时暂停，自由接管</footer>
+      <p class="privacy-footer"><a href="https://github.com/SCUliujiacheng/live-companion/blob/main/PRIVACY.md" target="_blank" rel="noopener noreferrer">隐私与数据说明 ↗</a></p>
+    </main>
+
+    <main id="settings-view" hidden>
+      <div class="settings-heading"><button id="close-settings" type="button" class="back-button" aria-label="返回陪聊">←</button><div><h2>API 与聊天设置</h2><p>用你选择的服务，聊出熟悉的语气。</p></div></div>
+      <form id="settings-form" autocomplete="off">
+        <section class="settings-card" aria-labelledby="chat-config-heading">
+          <div class="section-heading"><h3 id="chat-config-heading">聊天模型</h3><span class="subtle-tag">OpenAI 兼容</span></div>
+          <p class="section-helper">默认 OpenAI，也可以填写兼容服务的地址和模型。</p>
+          <label class="field">API 地址 <input id="chat-base-url" name="chat-base-url" type="url" value="https://api.openai.com/v1" placeholder="https://api.openai.com/v1" required spellcheck="false" inputmode="url"><span class="field-help">填写 Base URL，通常以 /v1 结尾。</span></label>
+          <label class="field">API Key <span class="password-field"><input id="chat-api-key" name="chat-api-key" type="password" placeholder="填写聊天服务密钥" autocomplete="off" spellcheck="false"><button type="button" class="reveal-key" data-input="chat-api-key" aria-label="显示聊天密钥">显示</button></span></label>
+          <label class="field">模型名称 <input id="chat-model" name="chat-model" type="text" value="gpt-4.1-mini" placeholder="gpt-4.1-mini" required spellcheck="false"></label>
+          <button id="test-chat" type="button" class="button secondary test-button">保存并测试聊天</button>
+          <p id="chat-test-result" class="test-result" role="status" hidden></p>
+        </section>
+
+        <section class="settings-card" aria-labelledby="transcription-config-heading">
+          <div class="section-heading"><h3 id="transcription-config-heading">声音转文字</h3><span class="subtle-tag">可独立配置</span></div>
+          <p class="section-helper">服务需要支持音频转写；只捕获直播声音，不使用麦克风。</p>
+          <label class="field">API 地址 <input id="transcription-base-url" name="transcription-base-url" type="url" value="https://api.openai.com/v1" placeholder="https://api.openai.com/v1" required spellcheck="false" inputmode="url"></label>
+          <label class="field">API Key <span class="password-field"><input id="transcription-api-key" name="transcription-api-key" type="password" placeholder="填写转写服务密钥" autocomplete="off" spellcheck="false"><button type="button" class="reveal-key" data-input="transcription-api-key" aria-label="显示转写密钥">显示</button></span><span class="field-help">使用同一服务时，在这里填入相同密钥。</span></label>
+          <label class="field">模型名称 <input id="transcription-model" name="transcription-model" type="text" value="gpt-4o-mini-transcribe" placeholder="gpt-4o-mini-transcribe" required spellcheck="false"></label>
+          <button id="test-transcription" type="button" class="button secondary test-button">保存并检查转写连接</button>
+          <p class="field-help">连接检查不代表音频转写已成功；开始监听后验证实际转写。</p>
+          <p id="transcription-test-result" class="test-result" role="status" hidden></p>
+        </section>
+
+        <section class="settings-card" aria-labelledby="personality-heading">
+          <div class="section-heading"><h3 id="personality-heading">搭子的聊天方式</h3></div>
+          <label class="field">我的 B 站昵称 <input id="nickname" name="nickname" type="text" placeholder="填写准确昵称，避免接自己的弹幕" maxlength="80"><span class="field-help">用于识别自己发过的话，不会修改账号昵称。</span></label>
+          <label class="field">聊天风格 <select id="style" name="style"><option value="轻松自然，短句接梗">轻松自然 · 简短接梗</option><option value="温柔真诚，适度捧场，不说空泛夸奖">温柔陪伴 · 适度捧场</option><option value="幽默俏皮，友善打趣，不冒犯他人">幽默俏皮 · 友善打趣</option></select></label>
+          <label class="field">直播间小笔记 <textarea id="room-notes" name="room-notes" rows="3" maxlength="4000" placeholder="例如：主播叫 Evan，唱歌时不插话。只讨论已经确认的信息。"></textarea><span class="field-help">主播称呼、熟悉的梗、想避开的话题。</span></label>
+          <div class="number-fields"><label class="field">发言间隔 <span class="unit-input"><input id="min-interval" name="min-interval" type="number" value="45" min="15" max="600" step="1" required><span>秒</span></span></label><label class="field">发送倒计时 <span class="unit-input"><input id="countdown" name="countdown" type="number" value="5" min="3" max="15" step="1" required><span>秒</span></span></label><label class="field">回复长度上限 <span class="unit-input"><input id="max-length" name="max-length" type="number" value="30" min="8" max="60" step="1" required><span>字</span></span></label></div>
+          <p class="field-help">发言间隔是最短等待时间；没有合适的话题会继续安静。</p>
+        </section>
+
+        <section class="key-storage"><label><input id="remember-keys" name="remember-keys" type="checkbox"><span><strong>在这台电脑上记住 API Key</strong><small>默认仅在本次浏览器会话中保留密钥。</small></span></label><p>本机保存未加密，公用电脑请勿勾选。</p></section>
+        <section class="clear-data-section"><button id="clear-data" type="button" class="button secondary">清除本机设置与密钥</button><p>同时停止监听并清除本次转写、弹幕上下文与运行记录。不会删除已发送到直播间或 AI 服务的数据。</p></section>
+        <div class="settings-footer"><button id="save-settings" type="submit" class="button primary">保存设置</button><p>首次使用某个 API 地址时，浏览器会请求访问该站点。</p><p class="privacy-footer"><a href="https://github.com/SCUliujiacheng/live-companion/blob/main/PRIVACY.md" target="_blank" rel="noopener noreferrer">隐私与数据说明 ↗</a></p></div>
+      </form>
+    </main>
+  </div>
+</body>
+</html>

@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-CN"><meta charset="utf-8"><title>模拟直播间 · DOM 适配测试</title>
+<style>textarea,button { display:block;width:240px;min-height:30px; } .chat-item { padding:4px; }</style>
+<!-- Simulated likely B站 class names; this fixture is not a verified live DOM snapshot. -->
+<div id="chat-items">
+  <div class="chat-item danmaku-item" data-id="history" data-uname="旧观众" data-danmaku="历史弹幕"><span class="user-name">旧观众</span><span class="danmaku-content">历史弹幕</span></div>
+</div>
+<div id="chat-control-panel-vm">
+  <div class="chat-input-ctnr"><textarea class="chat-input" placeholder="发个弹幕呗~"></textarea><button class="send-button">发送</button></div>
+</div>
+<script>
+window.clickCount = 0;
+window.addChat = (user, text, id = crypto.randomUUID()) => {
+  const item = document.createElement('div'); item.className = 'chat-item danmaku-item';
+  item.dataset.uname = user; item.dataset.danmaku = text; item.dataset.id = id;
+  const name = document.createElement('span'); name.className = 'user-name'; name.textContent = user;
+  const content = document.createElement('span'); content.className = 'danmaku-content'; content.textContent = text;
+  item.append(name, content); document.querySelector('#chat-items').append(item); return item;
+};
+document.querySelector('.send-button').addEventListener('click', () => {
+  window.clickCount += 1;
+  const input = document.querySelector('textarea');
+  if (window.suppressEcho) return;
+  window.addChat('自己', input.value); input.value = '';
+});
+</script></html>

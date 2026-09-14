@@ -1,0 +1,11 @@
+{
+  "name": "live-companion",
+  "version": "0.1.1",
+  "private": true,
+  "description": "Bilibili live voice and chat companion with configurable AI APIs",
+  "license": "MIT",
+  "repository": {"type":"git","url":"https://github.com/SCUliujiacheng/live-companion.git"},
+  "type": "module",
+  "scripts": {"test": "node --test tests/*.test.mjs", "check": "node scripts/check.mjs", "package": "node scripts/package.mjs"},
+  "engines": {"node": ">=20"}
+}

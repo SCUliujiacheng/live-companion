@@ -1,0 +1,17 @@
+{
+  "manifest_version": 3,
+  "name": "直播搭子 · 声音与弹幕陪聊",
+  "version": "0.1.1",
+  "version_name": "0.1.1 beta 1",
+  "description": "结合 B站主播声音和弹幕生成短回复，支持可取消的自动发送和自定义 AI API。",
+  "minimum_chrome_version": "116",
+  "permissions": ["activeTab", "scripting", "storage", "sidePanel", "tabCapture", "offscreen"],
+  "host_permissions": ["https://live.bilibili.com/*"],
+  "optional_host_permissions": ["https://*/*", "http://localhost/*", "http://127.0.0.1/*", "http://[::1]/*"],
+  "background": {"service_worker": "background.js", "type": "module"},
+  "icons": {"16":"icons/icon-16.png","32":"icons/icon-32.png","48":"icons/icon-48.png","128":"icons/icon-128.png"},
+  "action": {"default_title": "打开直播搭子", "default_icon":{"16":"icons/icon-16.png","32":"icons/icon-32.png","48":"icons/icon-48.png"}},
+  "homepage_url": "https://github.com/SCUliujiacheng/live-companion",
+  "side_panel": {"default_path": "sidepanel.html"},
+  "content_security_policy": {"extension_pages": "script-src 'self'; object-src 'self'; base-uri 'self'"}
+}

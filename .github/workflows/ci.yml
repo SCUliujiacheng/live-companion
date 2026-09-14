@@ -1,0 +1,31 @@
+name: Test extension
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install browser test tools
+        run: |
+          npm install --no-save --package-lock=false playwright
+          npx playwright install --with-deps chromium
+      - name: Native and browser fixture tests
+        run: npm test
+      - name: Extension integration and local API tests
+        run: |
+          npm run check
+          node scripts/browser-smoke.mjs
+          node scripts/config-smoke.mjs
+      - name: Build distribution ZIPs
+        run: npm run package
+      - uses: actions/upload-artifact@v4
+        with:
+          name: extension-packages
+          path: dist/*.zip
