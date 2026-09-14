@@ -29,7 +29,20 @@ try{
   for(const [kind,path,key,model] of [['chat','chat','test-chat-not-a-secret','local-test-chat'],['transcription','speech','test-audio-not-a-secret','local-test-transcribe']]){
     await page.locator(`#${kind}-base-url`).fill(`${base}/${path}/v1`);await page.locator(`#${kind}-api-key`).fill(key);await page.locator(`#${kind}-model`).fill(model);
   }
-  await page.locator('#save-settings').click();await page.waitForFunction(()=>document.querySelector('#feedback').textContent.includes('设置已保存'));
+  await page.locator('#save-settings').click();
+  try {
+    await page.waitForFunction(()=>document.querySelector('#feedback').textContent.includes('设置已保存'));
+  } catch (error) {
+    // Only inspect non-secret controls in this isolated fake-provider test.
+    console.error('Save diagnostics', await page.evaluate(async()=>({
+      feedback:document.querySelector('#feedback').textContent,
+      button:document.querySelector('#save-settings').textContent,
+      invalid:[...document.querySelectorAll(':invalid')].map(el=>({id:el.id,message:el.validationMessage})),
+      urls:['chat','transcription'].map(kind=>document.querySelector(`#${kind}-base-url`).value),
+      permissions:await chrome.permissions.getAll(),
+    })));
+    throw error;
+  }
   const sessionOnly=await page.evaluate(async()=>{const l=await chrome.storage.local.get(null),s=await chrome.storage.session.get('secrets');return {publicEmpty:!l.settings.chat.apiKey&&!l.settings.transcription.apiKey,saved:!!l.savedSecrets,sessionPresent:!!s.secrets?.chatApiKey&&!!s.secrets?.transcriptionApiKey};});
   assert.deepEqual(sessionOnly,{publicEmpty:true,saved:false,sessionPresent:true});
   await page.locator('#test-chat').click();await page.waitForFunction(()=>document.querySelector('#chat-test-result').textContent.includes('连接测试通过'));
