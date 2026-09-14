@@ -25,7 +25,9 @@ await writeFile(join(extension,'manifest.json'),JSON.stringify(manifest));
 const context=await chromium.launchPersistentContext('',{headless:true,channel:'chromium',executablePath:process.env.LIVE_COMPANION_BROWSER,args:[`--disable-extensions-except=${extension}`,`--load-extension=${extension}`],viewport:{width:380,height:900}});
 try{
   const worker=context.serviceWorkers()[0]||await context.waitForEvent('serviceworker');const id=new URL(worker.url()).host;
-  const page=await context.newPage();await page.goto(`chrome-extension://${id}/sidepanel.html`);await page.locator('#open-settings').click();
+  const page=await context.newPage();await page.goto(`chrome-extension://${id}/sidepanel.html`);
+  await page.waitForFunction(()=>document.body.dataset.ready==='true');
+  await page.locator('#open-settings').click();
   for(const [kind,path,key,model] of [['chat','chat','test-chat-not-a-secret','local-test-chat'],['transcription','speech','test-audio-not-a-secret','local-test-transcribe']]){
     await page.locator(`#${kind}-base-url`).fill(`${base}/${path}/v1`);await page.locator(`#${kind}-api-key`).fill(key);await page.locator(`#${kind}-model`).fill(model);
   }
@@ -53,7 +55,8 @@ try{
   await page.waitForFunction(async()=>Boolean((await chrome.storage.local.get('savedSecrets')).savedSecrets));
   await page.locator('#remember-keys').uncheck();await page.locator('#save-settings').click();
   await page.waitForFunction(async()=>!((await chrome.storage.local.get('savedSecrets')).savedSecrets));
-  await page.reload();await page.locator('#open-settings').click();await page.waitForFunction(()=>document.querySelector('#chat-model').value==='local-test-chat');
+  await page.reload();await page.waitForFunction(()=>document.body.dataset.ready==='true');
+  await page.locator('#open-settings').click();await page.waitForFunction(()=>document.querySelector('#chat-model').value==='local-test-chat');
   assert.equal(await page.locator('#chat-base-url').inputValue(),`${base}/chat/v1`);
   await page.locator('#chat-base-url').fill(`${base}/changed/v1`);assert.equal(await page.locator('#chat-api-key').inputValue(),'');
   await page.locator('#chat-api-key').fill('test-key-for-second-endpoint');

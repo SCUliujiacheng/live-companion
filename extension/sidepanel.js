@@ -7,6 +7,7 @@ let state = { status: 'idle', room: null, mode: 'review', singing: false, level:
 let savedSettings = { ...defaults, chat: { ...defaults.chat }, transcription: { ...defaults.transcription } };
 let actionBusy = false;
 let settingsBusy = false;
+let settingsLoaded = !hasRuntime;
 let eventSignature = '';
 let logSignature = '';
 let lastStateError = '';
@@ -81,7 +82,7 @@ function collectSettings() {
 // Called from a direct click / submit gesture. Request permissions before the
 // first await so Chrome can attribute its prompt to that user gesture.
 async function saveFromGesture(testKind = null) {
-  if (settingsBusy) return;
+  if (settingsBusy || (hasRuntime && !settingsLoaded)) return;
   if (!$('settings-form').reportValidity()) return;
   if (!hasRuntime) {
     announce('界面预览不会保存密钥或调用 API。加载扩展后再填写和保存。', 'error');
@@ -141,7 +142,7 @@ function showSettings(open) {
 }
 
 async function clearLocalData() {
-  if (!hasRuntime || settingsBusy || actionBusy) return;
+  if (!hasRuntime || !settingsLoaded || settingsBusy || actionBusy) return;
   if (!window.confirm('清除本机设置与密钥？\n\n这会停止监听，删除本机保存的设置、API Key、本次转写、弹幕上下文和运行记录。已发送到直播间或 AI 服务的数据不会被删除。')) return;
   settingsBusy = true;
   renderControls();
@@ -179,7 +180,10 @@ function updateModeDescription() {
 
 function renderControls() {
   const active = ['starting', 'listening', 'paused'].includes(state.status);
-  const disabled = !hasRuntime || actionBusy;
+  const disabled = !hasRuntime || !settingsLoaded || actionBusy;
+  for (const input of document.querySelectorAll('#settings-form input, #settings-form select, #settings-form textarea, #settings-form .reveal-key')) {
+    input.disabled = !settingsLoaded;
+  }
   $('start-button').hidden = active;
   $('pause-button').hidden = !active;
   $('stop-button').hidden = !active;
@@ -187,15 +191,15 @@ function renderControls() {
   $('pause-button').disabled = disabled || state.status === 'starting';
   $('stop-button').disabled = disabled;
   $('pause-button').textContent = state.status === 'starting' ? '正在连接…' : state.status === 'paused' ? '继续陪聊' : '暂停陪聊';
-  $('mode-picker').disabled = active;
+  $('mode-picker').disabled = active || !settingsLoaded;
   $('singing-toggle').disabled = disabled || !active || state.status === 'starting';
   $('cancel-button').disabled = disabled || !state.pending;
   $('send-now-button').disabled = disabled || !state.pending || state.status !== 'listening' || state.singing;
-  $('save-settings').disabled = !hasRuntime || settingsBusy;
-  $('test-chat').disabled = !hasRuntime || settingsBusy;
-  $('test-transcription').disabled = !hasRuntime || settingsBusy;
-  $('clear-data').disabled = !hasRuntime || settingsBusy || actionBusy;
-  $('save-settings').textContent = settingsBusy ? '正在保存 / 检查…' : '保存设置';
+  $('save-settings').disabled = !hasRuntime || !settingsLoaded || settingsBusy;
+  $('test-chat').disabled = !hasRuntime || !settingsLoaded || settingsBusy;
+  $('test-transcription').disabled = !hasRuntime || !settingsLoaded || settingsBusy;
+  $('clear-data').disabled = !hasRuntime || !settingsLoaded || settingsBusy || actionBusy;
+  $('save-settings').textContent = !settingsLoaded ? '正在读取设置…' : settingsBusy ? '正在保存 / 检查…' : '保存设置';
 }
 
 function timestamp(at) {
@@ -317,7 +321,7 @@ function renderState(next) {
 }
 
 async function runAction(type, payload = {}) {
-  if (actionBusy) return;
+  if (actionBusy || !settingsLoaded) return;
   actionBusy = true;
   renderControls();
   try {
@@ -384,9 +388,14 @@ if (hasRuntime) {
     if (sender?.id !== chrome.runtime.id || sender.tab) return;
     if (message?.target === 'panel' && message.type === 'state') renderState(message.state);
   });
+  announce('正在读取已保存的设置…');
   command('get-state').then((result) => {
     fillSettings(result.settings || defaults);
+    settingsLoaded = true;
+    announce('');
     renderState(result.state);
+    renderControls();
+    document.body.dataset.ready = 'true';
   }).catch((error) => announce(error.message, 'error'));
 } else {
   $('preview-banner').hidden = false;

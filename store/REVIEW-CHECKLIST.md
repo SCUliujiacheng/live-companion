@@ -1,6 +1,6 @@
 # Chrome Web Store 提交与审核检查单
 
-更新时间：2026 年 9 月 14 日。当前状态：**GitHub 发布准备／商店资料草稿，尚未提交或上架 Chrome Web Store**。此清单不代表商店已认可实现或隐私声明。
+更新时间：2026 年 9 月 14 日。当前状态：**GitHub 公开测试版／商店资料草稿，尚未提交或上架 Chrome Web Store**。此清单不代表商店已认可实现或隐私声明。
 
 ## 发布者仍需完成
 
@@ -10,7 +10,7 @@
 - [ ] 取得至少一个可用于端到端验证的真实直播场景，确认目标页面选择器、声音转写、候选生成和实际账号发送可用。目前隔离测试不替代这些验证。
 - [ ] 为审核安排能实际使用的测试条件，包括聊天／转写 API 访问以及需要时的 B 站测试访问。只能通过审核后台适当的私密说明或安全渠道安排；不要把真实 API Key、账号密码写入仓库、公开文档、截图或 Issues。测试凭据应独立、限制权限与费用，并在审核后撤销。
 - [ ] 填写商店 Listing、Privacy practices 和分发选项，核对单一用途、权限理由、处理的数据、隐私政策及有限使用认证。资料见 [LISTING.md](LISTING.md)。[官方隐私字段说明](https://developer.chrome.com/docs/webstore/cws-dashboard-privacy)
-- [ ] 仓库公开后，在未登录浏览器里访问 [隐私政策](https://github.com/SCUliujiacheng/live-companion/blob/main/PRIVACY.md) 和 [支持页面](https://github.com/SCUliujiacheng/live-companion/issues)，确认可用；主页应能直接找到隐私政策。
+- [x] 仓库、[隐私政策](https://github.com/SCUliujiacheng/live-companion/blob/main/PRIVACY.md) 和 [支持页面](https://github.com/SCUliujiacheng/live-companion/issues) 已公开，主页提供隐私政策入口。
 - [ ] 由发布者在开发者后台提交审核并处理反馈；审核通过前，不写“已上架”“官方认证”或虚构商店安装链接。商店审核是独立流程。[官方审核流程](https://developer.chrome.com/docs/webstore/review-process)
 
 ## 商店图片
