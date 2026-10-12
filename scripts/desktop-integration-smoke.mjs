@@ -1,7 +1,7 @@
 // Real desktop app, real IPC/audio, local fake website and fake AI provider.
 // No real account, microphone, provider key or public message is involved.
 import {_electron} from 'playwright';
-import {waitForPendingCandidate} from './desktop-smoke-helpers.mjs';
+import {waitForPendingCandidate,selectCommittedAIMode} from './desktop-smoke-helpers.mjs';
 import assert from 'node:assert/strict';
 import {createServer} from 'node:http';
 import {mkdtemp,mkdir,rm,writeFile} from 'node:fs/promises';
@@ -67,8 +67,7 @@ try{
   stage='configure-providers';
   await ui.locator('#open-settings').click();
   await ui.waitForFunction(()=>document.body.dataset.aiReady==='true');
-  await ui.locator('input[name="ai-mode"][value="api"]').check();
-  await ui.waitForFunction(()=>document.body.dataset.aiMode==='api');
+  await selectCommittedAIMode(ui,'api');
   for(const kind of ['chat','transcription']){await ui.locator(`#${kind}-base-url`).fill(base);await ui.locator(`#${kind}-api-key`).fill('test-only-fake-key');await ui.locator(`#${kind}-model`).fill(`test-${kind}`);}
   await ui.locator('#nickname').fill('测试观众');
   await ui.locator('#save-settings').click();await ui.waitForFunction(()=>document.querySelector('#feedback').textContent.includes('设置已保存'));
@@ -118,7 +117,8 @@ try{
   // trace or original failure, and screenshots are useful even when IPC fails.
   const collect=async(name,read)=>{try{diagnostics[name]=await read();}catch(failure){diagnostics[name]={error:failure.message};}};
   if(ui){
-    await collect('ui',()=>ui.evaluate(()=>({text:document.body.innerText,mode:document.querySelector('input[name="mode"]:checked')?.value,candidateHidden:document.querySelector('#candidate-content')?.hidden,states:window.__smokeStates})));
+    await collect('ui',()=>ui.evaluate(()=>({text:document.body.innerText,mode:document.querySelector('input[name="mode"]:checked')?.value,candidateHidden:document.querySelector('#candidate-content')?.hidden,aiMode:document.body.dataset.aiMode,aiModeChecked:document.querySelector('input[name="ai-mode"]:checked')?.value,aiModeDisabled:document.querySelector('#ai-mode-picker')?.disabled,states:window.__smokeStates})));
+    await collect('ai',()=>ui.evaluate(()=>window.desktopAPI.command('ai-get-state')));
     await collect('state',()=>ui.evaluate(async()=>{const result=await window.desktopAPI.command('get-state');return {ok:result.ok,state:result.state,error:result.error};}));
   }
   if(roomEval)await collect('room',()=>roomEval('({sent:window.sent,text:document.body.innerText})'));

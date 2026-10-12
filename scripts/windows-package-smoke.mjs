@@ -2,8 +2,11 @@
 // Installs/uninstalls the actual NSIS artifact, then launches the portable EXE.
 // No login, real room, microphone, API key, or external messages are involved.
 import assert from 'node:assert/strict';
-import { _electron } from 'playwright';
-import { execFile } from 'node:child_process';
+import { chromium } from 'playwright';
+import { connectInspector } from './lib/package-inspector.mjs';
+import { createServer } from 'node:net';
+import { appendFileSync } from 'node:fs';
+import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdtemp, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -33,8 +36,39 @@ const waitUntil = async (predicate, message, timeout = 60000) => {
     await new Promise(done => setTimeout(done, 300));
   }
 };
-let application, uninstaller, uninstalled = false;
+let uninstaller, uninstalled = false;
 await mkdir(output, { recursive: true });
+async function stage(name) {
+  report.stage = name;
+  (report.stages ??= []).push({ name, at: new Date().toISOString() });
+  console.log(`[${new Date().toISOString()}] ${name}`);
+  await writeFile(join(output, 'results.json'), JSON.stringify(report, null, 2));
+}
+async function bounded(promise, milliseconds, message) {
+  let timer;
+  try { return await Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(message)), milliseconds); })]); }
+  finally { clearTimeout(timer); }
+}
+async function localPort() {
+  const server = createServer();
+  await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
+  const port = server.address().port;
+  await new Promise(resolve => server.close(resolve));
+  return port;
+}
+async function inspectorEndpoint(port, child, browser = false) {
+  let endpoint;
+  await waitUntil(async () => {
+    assert.equal(child.exitCode, null, 'application exited before inspector became ready');
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/json/${browser ? 'version' : 'list'}`, { signal: AbortSignal.timeout(1000) });
+      const data = await response.json();
+      endpoint = browser ? data.webSocketDebuggerUrl : data.find(target => target.webSocketDebuggerUrl)?.webSocketDebuggerUrl;
+      return Boolean(endpoint);
+    } catch { return false; }
+  }, `${browser ? 'Chromium CDP' : 'Node inspector'} did not become ready`, 180000);
+  return endpoint;
+}
 
 // This function is serialized into the packaged Electron main process. All
 // implementation and native modules are loaded from its own resources, never
@@ -81,15 +115,43 @@ async function launchAndCheck(executablePath, label, allowDownload) {
   await mkdir(profile);
   const env = { ...process.env, LIVE_COMPANION_PACKAGE_SMOKE: '1', LIVE_COMPANION_TEST_USER_DATA: profile };
   delete env.ELECTRON_RUN_AS_NODE;
-  const logs = [];
+  delete env.NODE_OPTIONS;
+  const nodePort = await localPort();
+  let browserPort = await localPort();
+  while (browserPort === nodePort) browserPort = await localPort();
+  const logPath = join(output, `${label}-stderr.log`);
+  await writeFile(logPath, '');
+  let browser, inspector, child, ended, exited = false;
   try {
-    application = await _electron.launch({ executablePath, args: ['--package-smoke'], cwd: temporary, env, timeout: 180000 });
-    application.process().stderr?.on('data', bytes => logs.push(bytes.toString()));
-    const ui = await application.firstWindow();
+    await stage(`${label}: launch actual executable`);
+    // Launch the real portable wrapper too. NSIS does not inherit stderr into
+    // its child, so debugger discovery uses explicit loopback ports instead.
+    child = spawn(executablePath, [`--inspect=127.0.0.1:${nodePort}`, `--remote-debugging-port=${browserPort}`,
+      '--remote-debugging-address=127.0.0.1', '--package-smoke'], { cwd: temporary, env, windowsHide: true });
+    child.stderr.on('data', bytes => appendFileSync(logPath, bytes));
+    ended = new Promise((resolve, reject) => {
+      child.once('error', reject);
+      child.once('exit', (code, signal) => { exited = true; resolve({ code, signal }); });
+    });
+    ended.catch(() => {}); // An early spawn error is surfaced by the attach race.
+    const endpoint = await Promise.race([inspectorEndpoint(nodePort, child), ended.then(result => { throw new Error(`Application exited before attach: ${JSON.stringify(result)}`); })]);
+    inspector = await connectInspector(endpoint);
+    const evaluate = (fn, argument, timeout = 30000) => inspector.evaluate(`(${fn.toString()})(process.getBuiltinModule('node:module').createRequire(process.resourcesPath + '/app.asar/package.json')('electron'),${JSON.stringify(argument) ?? 'undefined'})`, { timeout });
+    await stage(`${label}: attach UI and verify preload`);
+    // Node's inspector appears before Chromium finishes startup. A single
+    // connectOverCDP HTTP lookup does not retry ECONNREFUSED, so poll readiness.
+    const browserEndpoint = await inspectorEndpoint(browserPort, child, true);
+    browser = await chromium.connectOverCDP(browserEndpoint, { timeout: 60000 });
+    const context = browser.contexts()[0];
+    context.setDefaultTimeout(30000);
+    let ui;
+    await waitUntil(async () => {
+      ui = context.pages().find(page => page.url() === 'companion://app/desktop/ui/index.html');
+      return Boolean(ui);
+    }, 'packaged local UI did not open', 60000);
     const errors = [];
     ui.on('pageerror', error => errors.push(error.message));
     await ui.waitForFunction(() => document.body.dataset.ready === 'true', undefined, { timeout: 60000 });
-    assert.equal(ui.url(), 'companion://app/desktop/ui/index.html');
     assert.equal(await ui.evaluate(() => typeof window.require), 'undefined', 'privileged UI is sandboxed');
     const version = await ui.evaluate(() => window.desktopAPI.getVersion());
     assert.match(version, /^\d+\.\d+\.\d+/);
@@ -97,9 +159,10 @@ async function launchAndCheck(executablePath, label, allowDownload) {
     await ui.waitForFunction(() => document.body.dataset.aiReady === 'true');
     const state = await ui.evaluate(() => window.desktopAPI.command('ai-get-state'));
     assert.equal(state.ok, true, 'real preload and allowlisted IPC work from packaged UI');
-    const info = await application.evaluate(({ app, BrowserWindow, webContents }) => ({
+    const info = await evaluate(({ app, BrowserWindow, webContents }) => ({
       isPackaged: app.isPackaged, appPath: app.getAppPath(), userData: app.getPath('userData'),
       executable: process.execPath, resources: process.resourcesPath,
+      portableFile: process.env.PORTABLE_EXECUTABLE_FILE || '',
       pages: webContents.getAllWebContents().map(contents => ({ url: contents.getURL(), api: contents.getType() })),
       preferences: BrowserWindow.getAllWindows()[0].webContents.getLastWebPreferences(),
     }));
@@ -111,25 +174,35 @@ async function launchAndCheck(executablePath, label, allowDownload) {
     assert.equal(info.preferences.nodeIntegration, false);
     assert.ok(info.pages.every(page => !/^https?:/.test(page.url)), 'no external page is visited in acceptance mode');
     if (label === 'installed') assert.equal(resolve(dirname(info.executable)), resolve(installation));
+    else assert.equal(resolve(info.portableFile), resolve(executablePath), 'actual NSIS portable wrapper launched this process');
     const worker = join(info.resources, 'app.asar.unpacked/desktop/local-speech-worker.js');
     assert.equal(await exists(worker), true, 'actual worker is unpacked outside ASAR');
-    const nativeDirectory = join(info.resources, 'app.asar.unpacked/node_modules/onnxruntime-node/bin');
-    assert.equal(await exists(nativeDirectory), true, 'ONNX runtime shipped with application');
-    const speech = await application.evaluate(packagedSpeech, { directory, fixture, allowDownload });
+    assert.equal(await exists(join(info.resources, 'app.asar.unpacked/node_modules/onnxruntime-node/bin')), true, 'ONNX runtime shipped with application');
+    await stage(`${label}: real packaged Chinese ASR and offline restart`);
+    const speech = await evaluate(packagedSpeech, { directory, fixture, allowDownload }, 240000);
     await ui.screenshot({ path: join(output, `${label}.png`) });
     assert.deepEqual(errors, [], 'packaged UI has no uncaught page errors');
-    // Exercise the application's own close handler, not a forced process kill.
-    const closed = application.waitForEvent('close', { timeout: 30000 });
-    await application.evaluate(({ BrowserWindow }) => { BrowserWindow.getAllWindows()[0].close(); });
-    await closed;
-    application = null;
     report.applications.push({ label, version, executable: basename(executablePath), speech,
       checks: ['fresh userData', 'packaged privileged UI and IPC', 'sandbox and context isolation',
-        'unpacked worker and ONNX', 'real Chinese CPU ASR', 'offline service restart', 'graceful window close'] });
+        'unpacked worker and ONNX', 'real Chinese CPU ASR', 'offline service restart'] });
+    await stage(`${label}: request graceful close and detach inspector`);
+    // Exercise the real application window handler, then detach the inspector
+    // BEFORE awaiting process exit: an attached Node debugger prevents exit.
+    await evaluate(({ BrowserWindow }) => { setTimeout(() => BrowserWindow.getAllWindows()[0].close(), 0); return true; });
+    await inspector.close(); inspector = null;
+    const result = await bounded(ended, 30000, `${label}: application did not exit after debugger detach`);
+    assert.equal(result.code, 0, `application exited unsuccessfully: ${JSON.stringify(result)}`);
+    report.applications.at(-1).checks.push('graceful window close');
     report.checks.push(`${label}: launch, UI, worker, real ASR, offline restart, close`);
+    await stage(`${label}: graceful exit verified`);
   } finally {
-    if (application) { await application.close().catch(() => {}); application = null; }
-    await writeFile(join(output, `${label}-stderr.log`), logs.join(''));
+    await inspector?.close().catch(error => { report.inspectorCleanupError = error.message; });
+    if (browser) await bounded(browser.close(), 10000, 'CDP cleanup timed out').catch(error => { report.browserCleanupError = error.message; });
+    if (child && !exited) {
+      // Only our launched process tree is eligible for failure cleanup.
+      await run('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], { timeout: 15000, windowsHide: true }).catch(error => { report.processCleanupError = error.message; });
+      await bounded(ended, 10000, 'process cleanup timed out').catch(() => {});
+    }
   }
 }
 
@@ -145,6 +218,7 @@ try {
   await readFile(fixture);
   // NSIS /D must be last and unquoted, even for a path containing spaces.
   // /S suppresses runAfterFinish in electron-builder's one-click template.
+  await stage('NSIS: silent install');
   await run(setup, ['/S', `/D=${installation}`], { timeout: 180000, windowsHide: true, windowsVerbatimArguments: true });
   const installedFiles = await readdir(installation);
   const uninstallName = installedFiles.find(name => /^Uninstall.*\.exe$/i.test(name));
@@ -155,6 +229,7 @@ try {
   const installedExecutable = join(installation, executables[0]);
   report.checks.push('silent NSIS install into isolated directory');
   await launchAndCheck(installedExecutable, 'installed', true);
+  await stage('NSIS: silent uninstall');
   await run(uninstaller, ['/S'], { timeout: 180000, windowsHide: true });
   await waitUntil(async () => !(await exists(installedExecutable)) && !(await exists(join(installation, 'resources/app.asar'))), 'NSIS uninstall did not remove application files');
   uninstalled = true;
@@ -162,9 +237,11 @@ try {
   await launchAndCheck(portable, 'portable', false);
   report.ok = true;
   report.limits = ['No real ChatGPT/Bilibili login, quota or live-room message', 'No physical Windows audio device or live capture acceptance', 'No code signature/SmartScreen reputation assertion'];
+  await stage('acceptance complete');
   console.log(JSON.stringify(report, null, 2));
 } catch (error) {
   report.error = error.stack || String(error);
+  await stage('acceptance failed');
   throw error;
 } finally {
   if (uninstaller && !uninstalled && await exists(uninstaller)) {
