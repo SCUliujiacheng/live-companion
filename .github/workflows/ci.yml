@@ -59,15 +59,27 @@ jobs:
       - run: npm run check
       - run: npm run desktop:build
       - name: Native Electron source audio isolation
+        id: audio
+        continue-on-error: true
         run: node scripts/desktop-audio-smoke.mjs
       - name: Native Electron automatic send and pause cancellation fixture
+        id: integration
+        continue-on-error: true
         run: node scripts/desktop-integration-smoke.mjs
       - name: Real Chinese Whisper, cancellation, and offline restart
+        id: speech
+        continue-on-error: true
         run: node scripts/desktop-local-speech-smoke.mjs --directory "${{ runner.temp }}/speech-cache"
       - name: Build Windows installer and portable application
         run: npm run desktop:dist
       - name: Installed and portable application lifecycle and packaged Whisper
         run: node scripts/windows-package-smoke.mjs --directory "${{ runner.temp }}/speech-cache"
+      - name: Require every native acceptance check
+        shell: pwsh
+        run: |
+          if ('${{ steps.audio.outcome }}' -ne 'success' -or '${{ steps.integration.outcome }}' -ne 'success' -or '${{ steps.speech.outcome }}' -ne 'success') {
+            throw 'A required native acceptance check failed. No release may be published.'
+          }
       - name: Hash acceptance packages
         shell: pwsh
         run: |

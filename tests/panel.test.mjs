@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
+import { waitForPendingCandidate } from '../scripts/desktop-smoke-helpers.mjs';
 import { DEFAULT_SETTINGS } from '../extension/core/settings.js';
 
 const require = createRequire(import.meta.url);
@@ -27,7 +28,7 @@ async function openPanel({ preview = false } = {}) {
       window.chrome = {
         runtime: {
           id: 'isolated-panel-test',
-          onMessage: { addListener() {} },
+          onMessage: { addListener(listener) { window.__panelTest.emitState = state => listener({target: 'panel', type: 'state', state}, {id: 'isolated-panel-test'}); } },
           sendMessage(message) {
             window.__panelTest.requests.push(message);
             if (message.type === 'get-state') {
@@ -106,5 +107,23 @@ test('standalone preview remains editable without enabling API or live actions',
     assert.equal(await page.locator('#save-settings').isDisabled(), true);
     assert.equal(await page.locator('#start-button').isDisabled(), true);
     assert.notEqual(await page.locator('body').getAttribute('data-ready'), 'true');
+  } finally { await browser.close(); }
+});
+
+
+test('native smoke readiness rejects a previous session’s hidden candidate and wrong mode', { skip: !playwright }, async () => {
+  const { browser, page } = await openPanel();
+  try {
+    await page.evaluate(settings => window.__panelTest.releaseBootstrap({ok:true,settings,state:{status:'listening',mode:'review',events:[],logs:[],pending:{text:'上一场的回复',dueAt:Date.now()+5000}}}), DEFAULT_SETTINGS);
+    await page.waitForFunction(() => document.body.dataset.ready === 'true');
+    await page.locator('#close-settings').click();
+    await waitForPendingCandidate(page,{mode:'review',timeout:1000});
+    await page.evaluate(() => window.__panelTest.emitState({status:'idle',pending:null}));
+    assert.equal(await page.locator('#candidate-text').textContent(),'上一场的回复','reproduce retained hidden text');
+    await assert.rejects(waitForPendingCandidate(page,{mode:'auto',timeout:150}),/Timeout/);
+    await page.evaluate(() => window.__panelTest.emitState({status:'listening',mode:'review',pending:{text:'新的回复',dueAt:Date.now()+5000}}));
+    await assert.rejects(waitForPendingCandidate(page,{mode:'auto',timeout:150}),/Timeout/);
+    await page.evaluate(() => window.__panelTest.emitState({mode:'auto'}));
+    await waitForPendingCandidate(page,{mode:'auto',timeout:1000});
   } finally { await browser.close(); }
 });
