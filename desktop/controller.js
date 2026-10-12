@@ -33,11 +33,12 @@ function normalizeRoom(room){
  * `state` contains display data only; keys are returned only by get-state.
  */
 export class DesktopController {
-  constructor({loadSettings,saveSettings,clearSettings,roomCommand,captureStart,captureStop,emit,generate=generateReply,transcribe=transcribeAudio,now=Date.now}){
+  constructor({loadSettings,saveSettings,clearSettings,roomCommand,captureStart,captureStop,emit,generate=generateReply,transcribe=transcribeAudio,validateProviders,now=Date.now}){
     for(const [name,fn] of Object.entries({loadSettings,saveSettings,clearSettings,roomCommand,captureStart,captureStop,emit,generate,transcribe,now})){
       if(typeof fn!=='function')throw new TypeError(`DesktopController requires ${name}`);
     }
     Object.assign(this,{loadSettings,saveSettings,clearSettings,roomCommand,captureStart,captureStop,emit,generate,transcribe,now});
+    this.validateProviders=validateProviders||((settings)=>{if(!settings.chat.apiKey||!settings.transcription.apiKey)throw new Error('请填写聊天和语音转写 API Key');});
     this.settings=normalizeSettings(DEFAULT_SETTINGS);this.room=null;this.state=initialState(null);
     this.session=null;this.engine=null;this.starting=false;this.stopping=null;this.settingsBusy=false;
     this.lifecycle=0;this.sendEpoch=0;this.roomVersion=0;this.timer=null;this.captureStarting=null;
@@ -83,7 +84,7 @@ export class DesktopController {
     const ensureCurrent=()=>{if(version!==this.lifecycle||this.room?.roomId!==room.roomId)throw new Error('开始操作已取消');};
     try{
       await this.ready;ensureCurrent();if(this.loadError)throw new Error(this.loadError);
-      if(!this.settings.chat.apiKey||!this.settings.transcription.apiKey)throw new Error('请填写聊天和语音转写 API Key');
+      await this.validateProviders(this.settings);ensureCurrent();
       this.session=session;this.captureFailed=false;this.voiceReady=false;this.audioErrors=0;this.clearAudio();
       this.publish({...initialState(room),status:'starting',activity:'正在连接直播声音'});
       const attached=await this.roomCommand('attach',{sessionId:session.id,roomId:room.roomId});

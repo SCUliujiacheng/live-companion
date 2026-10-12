@@ -23,13 +23,27 @@ try {
     timeout: 30_000,
   });
   await application.evaluate(async () => { await globalThis.audioSmoke.ready; });
-  const receiver = application.windows().find(page => page.url().startsWith('https://capture.audio-smoke.invalid/'));
+  const receiver = application.windows().find(page => page.url().startsWith('companion://app/'));
   assert.ok(receiver, 'trusted capture renderer is available');
   await receiver.waitForFunction(() => typeof window.audioSmokeReceiver?.start === 'function');
   const versions = await application.evaluate(() => ({ electron: process.versions.electron, chromium: process.versions.chrome }));
+  const denied = await application.evaluate(async () => {
+    const { source, other, receiver, capturePermission } = globalThis.audioSmoke;
+    const request = async sourceContents => {
+      const id = sourceContents.getMediaSourceId(receiver.webContents);
+      return receiver.webContents.executeJavaScript(`navigator.mediaDevices.getUserMedia({audio:{mandatory:{chromeMediaSource:'tab',chromeMediaSourceId:${JSON.stringify(id)}}},video:false}).then(stream=>{stream.getTracks().forEach(track=>track.stop());return {ok:true};},error=>({ok:false,name:error.name}))`);
+    };
+    capturePermission.grant(source.webContents, receiver.webContents);
+    const otherPage = await request(other.webContents);
+    capturePermission.revoke();
+    const cancelled = await request(source.webContents);
+    return { otherPage, cancelled };
+  });
+  assert.deepEqual(denied, { otherPage: { ok: false, name: 'NotAllowedError' }, cancelled: { ok: false, name: 'NotAllowedError' } });
   const streamId = await application.evaluate(() => {
-    const { source, receiver } = globalThis.audioSmoke;
+    const { source, receiver, capturePermission } = globalThis.audioSmoke;
     if (source.webContents.session === receiver.webContents.session) throw new Error('Fixture must use separate source and receiver partitions');
+    capturePermission.grant(source.webContents, receiver.webContents);
     return source.webContents.getMediaSourceId(receiver.webContents);
   });
   const tracks = await receiver.evaluate(id => window.audioSmokeReceiver.start(id), streamId);
@@ -42,6 +56,17 @@ try {
   assert.ok(beforeMute.segments[0].tone880 < beforeMute.segments[0].tone440 / 30, '880Hz unrelated page is excluded from captured audio');
   assert.equal(beforeMute.constraints.video, false);
   assert.equal(beforeMute.constraints.audio.mandatory.chromeMediaSource, 'tab');
+  const sourcePlayback = await application.evaluate(() => {
+    const wc = globalThis.audioSmoke.source.webContents;
+    return { audible: wc.isCurrentlyAudible(), muted: wc.isAudioMuted() };
+  });
+  assert.deepEqual(sourcePlayback, { audible: true, muted: false }, 'capturing the page preserves its original audible output');
+  const reusedPermission = await application.evaluate(async () => {
+    const { source, receiver } = globalThis.audioSmoke;
+    const id = source.webContents.getMediaSourceId(receiver.webContents);
+    return receiver.webContents.executeJavaScript(`navigator.mediaDevices.getUserMedia({audio:{mandatory:{chromeMediaSource:'tab',chromeMediaSourceId:${JSON.stringify(id)}}},video:false}).then(stream=>{stream.getTracks().forEach(track=>track.stop());return {ok:true};},error=>({ok:false,name:error.name}))`);
+  });
+  assert.deepEqual(reusedPermission, { ok: false, name: 'NotAllowedError' }, 'a successful capture does not cache a reusable permission');
   const mutedAt = await application.evaluate(async () => {
     await globalThis.audioSmoke.source.webContents.executeJavaScript('tone.gain.gain.value = 0; true');
     return Date.now();
@@ -68,22 +93,22 @@ try {
   const noLateCallbacks = await receiver.evaluate(() => window.audioSmokeReceiver.snapshot());
   assert.equal(noLateCallbacks.levels.length, stopped.levels.length, 'no level callbacks after stop');
   assert.deepEqual(noLateCallbacks.errors, []);
+  const grantedRequests = await application.evaluate(() => globalThis.audioSmoke.permissionLog.filter(entry => entry.allowed));
+  assert.equal(grantedRequests.length, 1);
+  assert.equal(grantedRequests[0].source, true);
+  assert.equal(grantedRequests[0].details.securityOrigin, 'companion://app/');
+  assert.deepEqual(grantedRequests[0].details.mediaTypes, []);
   console.log(JSON.stringify({
     ok: true, versions, tracks, separatePartitions: true, wav: beforeMute.segments[0],
     maximumQuietLevel: Math.max(...quietLevels.map(sample => sample.level)),
     stop: { contexts: stopped.contextStates, tracks: stopped.trackStates, sourceState: resumedSource.state },
-    checks: ['real getMediaSourceId', 'actual audio-only getUserMedia tab capture', 'actual production WAV segment', '440Hz target present', '880Hz unrelated page excluded', 'source silence excludes unrelated audio', 'resources released', 'source remains playing', 'no callbacks after stop'],
+    sourcePlayback,
+    permissions: { cancelledCapture: denied.cancelled.name, unapprovedSource: denied.otherPage.name, reusedPermission: reusedPermission.name, grantedRequests: grantedRequests.length },
+    checks: ['real getMediaSourceId', 'production single-use permission gate', 'actual audio-only getUserMedia tab capture', 'actual production WAV segment', '440Hz target present', '880Hz unrelated page excluded', 'source silence excludes unrelated audio', 'resources released', 'source remains playing', 'no callbacks after stop'],
   }, null, 2));
 } catch (error) {
   if (application) {
-    const diagnostic = await application.evaluate(async () => {
-      const { source, receiver } = globalThis.audioSmoke;
-      const id = source.webContents.getMediaSourceId(receiver.webContents);
-      const videoProbe = await receiver.webContents.executeJavaScript(`navigator.mediaDevices.getUserMedia({video:{mandatory:{chromeMediaSource:'tab',chromeMediaSourceId:${JSON.stringify(id)}}},audio:false}).then(stream=>{const count=stream.getVideoTracks().length;stream.getTracks().forEach(track=>track.stop());return {ok:true,count};},error=>({ok:false,name:error.name,message:error.message}))`);
-      const selfId = receiver.webContents.getMediaSourceId(receiver.webContents);
-      const selfProbe = await receiver.webContents.executeJavaScript(`navigator.mediaDevices.getUserMedia({video:{mandatory:{chromeMediaSource:'tab',chromeMediaSourceId:${JSON.stringify(selfId)}}},audio:false}).then(stream=>{const count=stream.getVideoTracks().length;stream.getTracks().forEach(track=>track.stop());return {ok:true,count};},error=>({ok:false,name:error.name,message:error.message}))`);
-      return { permissionLog: globalThis.audioSmoke?.permissionLog, videoProbe, selfProbe };
-    }).catch(() => null);
+    const diagnostic = await application.evaluate(() => ({ permissionLog: globalThis.audioSmoke?.permissionLog })).catch(() => null);
     console.error(JSON.stringify({ audioSmokeDiagnostic: diagnostic }));
   }
   throw error;

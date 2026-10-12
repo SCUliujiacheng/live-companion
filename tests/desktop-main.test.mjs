@@ -4,6 +4,7 @@ import {readFile} from 'node:fs/promises';
 import {join,resolve,relative,isAbsolute} from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import vm from 'node:vm';
+import {createCapturePermissionGate} from '../desktop/capture-permission.js';
 
 const UI='companion://app/desktop/ui/index.html';
 async function fixture({failBoot=false}={}){
@@ -34,6 +35,8 @@ async function fixture({failBoot=false}={}){
   const app={isPackaged:true,setName(){},requestSingleInstanceLock:()=>true,on(){},whenReady:()=>Promise.resolve(),getPath:()=>'/test-profile',getVersion:()=>'0.2.0',quit(){app.didQuit=true;}};
   const context=vm.createContext({
     app,BrowserWindow:Window,WebContentsView:View,DesktopController:Controller,createSettingsStore:()=>({}),
+    createAIRouter:()=>({generate(){},transcribe(){},ensureReady(){},getState:async()=>({}),command:async()=>({ok:true}),close:async()=>{}}),
+    createCapturePermissionGate,
     ipcMain:{handle:(name,fn)=>handles.set(name,fn),on:(name,fn)=>listeners.set(name,fn)},
     protocol:{registerSchemesAsPrivileged(){},handle(){}},net:{},session:{fromPartition:()=>makeSession()},safeStorage:{},shell:{openExternal:async()=>{}},
     powerSaveBlocker:{start:()=>1,stop(){}},Menu:{buildFromTemplate:x=>x,setApplicationMenu(){}},dialog:{showErrorBox:(...args)=>dialogs.push(args)},
@@ -68,16 +71,26 @@ test('desktop main permits an exact room-bound send and ignores a mismatched res
   assert.equal((await pending).ok,true);
 });
 
-test('desktop media permission is denied before capture and permits only active local UI audio',async t=>{
-  const f=await fixture();t.after(f.finish);const wc=f.windows[0].webContents;
-  assert.equal(f.uiSession.check(wc,'media','companion://app',{isMainFrame:true,mediaType:'audio',requestingUrl:UI}),false);
+test('desktop grants only its own single-use source capture and never general microphone permission',async t=>{
+  const f=await fixture();t.after(f.finish);const wc=f.windows[0].webContents,source=f.views[0].webContents;
+  const details={isMainFrame:true,requestingUrl:source.getURL(),securityOrigin:'companion://app/',mediaTypes:[]};
+  const requestPermission=(target,options)=>{let allowed;target.session.request(target,'media',value=>{allowed=value;},options);return allowed;};
+  assert.equal(requestPermission(source,details),false);
   const opening=f.controller.dependencies.captureStart('session-one');
-  assert.equal(f.uiSession.check(wc,'media','companion://app/',{isMainFrame:true,mediaType:'audio',requestingUrl:UI}),true);
-  assert.equal(f.uiSession.check(wc,'media','https://evil.example',{isMainFrame:true,mediaType:'audio'}),false);
-  assert.equal(f.uiSession.check(wc,'media','companion://app',{isMainFrame:false,mediaType:'audio'}),false);
-  assert.equal(f.uiSession.check(wc,'media','companion://app',{isMainFrame:true,mediaType:'video'}),false);
-  let videoAllowed=true;f.uiSession.request(wc,'media',value=>{videoAllowed=value;},{isMainFrame:true,requestingUrl:UI,securityOrigin:'companion://app',mediaTypes:['video']});assert.equal(videoAllowed,false);
+  assert.equal(f.uiSession.check(wc,'media','companion://app/',{isMainFrame:true,mediaType:'audio',requestingUrl:UI}),false);
+  assert.equal(requestPermission(source,{...details,mediaTypes:['audio']}),false);
+  assert.equal(requestPermission(source,{...details,securityOrigin:'https://live.bilibili.com'}),false);
+  assert.equal(requestPermission(source,details),true);
+  assert.equal(requestPermission(source,details),false);
   const request=f.sent.at(-1).payload;f.listeners.get('companion-capture-event')(f.uiEvent(),{type:'result',payload:{requestId:request.requestId,ok:true}});assert.equal((await opening).ok,true);
+});
+
+test('AI account operations require the trusted main UI and route changes stop at an active session',async t=>{
+  const f=await fixture();t.after(f.finish);const handle=f.handles.get('companion-command');
+  assert.equal((await handle(f.roomEvent(),{type:'chatgpt-sign-in'})).ok,false);
+  assert.equal((await handle(f.uiEvent(),{type:'ai-set-mode',payload:{mode:'api'}})).ok,false);
+  assert.equal((await handle(f.uiEvent(),{type:'ai-get-state'})).ok,true);
+  assert.equal((await handle(f.uiEvent(),{type:'chatgpt-cancel-sign-in'})).ok,true);
 });
 
 test('desktop capture startup rejects stale sessions before creating a media source',async t=>{

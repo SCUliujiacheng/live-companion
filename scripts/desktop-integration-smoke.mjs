@@ -24,8 +24,10 @@ await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
 const base=`http://127.0.0.1:${server.address().port}/v1`;
 const env={...process.env,LIVE_COMPANION_TEST_USER_DATA:profile};delete env.ELECTRON_RUN_AS_NODE;
 let application;
+const stderr=[];
 try{
   application=await _electron.launch({args:[join(root,'tests/fixtures/desktop-integration/main.cjs')],env,timeout:40000});
+  application.process().stderr.on('data',data=>stderr.push(data.toString()));
   const ui=await application.firstWindow();
   await ui.waitForFunction(()=>document.body.dataset.ready==='true');
   await application.evaluate(({BrowserWindow})=>{for(const window of BrowserWindow.getAllWindows())window.hide();});
@@ -37,8 +39,11 @@ try{
   const roomEval=source=>application.evaluate(({webContents},{id,source})=>webContents.fromId(id).executeJavaScript(source,true),{id:roomId,source});
   assert.equal(await roomEval('typeof window.desktopAPI'),'undefined','remote room cannot access privileged API');
   assert.equal(await roomEval('typeof window.require'),'undefined','remote room has no Node require');
-  assert.equal(await roomEval('Boolean(document.querySelector("#play"))'),true,await roomEval('JSON.stringify({url:location.href,title:document.title,text:document.body.innerText.slice(0,400)})'));
+  assert.equal(await roomEval('Boolean(document.querySelector("#play"))'),true,JSON.stringify({document:await roomEval('({url:location.href,title:document.title,text:document.body.innerText.slice(0,400)})'),fixture:await application.evaluate(()=>globalThis.__desktopFixtureDiagnostics)}));
   await ui.locator('#open-settings').click();
+  await ui.waitForFunction(()=>document.body.dataset.aiReady==='true');
+  await ui.locator('input[name="ai-mode"][value="api"]').check();
+  await ui.waitForFunction(()=>document.body.dataset.aiMode==='api');
   for(const kind of ['chat','transcription']){await ui.locator(`#${kind}-base-url`).fill(base);await ui.locator(`#${kind}-api-key`).fill('test-only-fake-key');await ui.locator(`#${kind}-model`).fill(`test-${kind}`);}
   await ui.locator('#nickname').fill('测试观众');
   await ui.locator('#save-settings').click();await ui.waitForFunction(()=>document.querySelector('#feedback').textContent.includes('设置已保存'));
@@ -58,12 +63,33 @@ try{
   assert.deepEqual(await roomEval('sent'),['最近想找部轻松的电影看']);
   await ui.locator('#pause-button').click();await ui.waitForFunction(()=>document.querySelector('#status-label').textContent==='已暂停');
   await ui.locator('#stop-button').click();await ui.waitForFunction(()=>document.querySelector('#status-label').textContent==='未开始');
+  // Exercise the automatic path with real countdown timing and the same native
+  // audio/HTTP/page adapter pipeline. This still only posts into the fixture.
+  await ui.locator('input[name="mode"][value="auto"]').check();
+  await ui.locator('#start-button').click();
+  await ui.waitForFunction(()=>document.querySelector('#candidate-text').textContent.length>0,undefined,{timeout:22000});
+  await ui.waitForFunction(()=>document.querySelector('#sent-count').textContent.includes('1 条'),undefined,{timeout:12000});
+  assert.equal(await roomEval('sent.length'),2,'automatic countdown posted exactly one additional message');
+  await ui.locator('#stop-button').click();await ui.waitForFunction(()=>document.querySelector('#status-label').textContent==='未开始');
+  await ui.locator('#start-button').click();
+  await ui.waitForFunction(()=>document.querySelector('#candidate-text').textContent.length>0,undefined,{timeout:22000});
+  await ui.locator('#pause-button').click();
+  await new Promise(resolve=>setTimeout(resolve,6500));
+  assert.equal(await roomEval('sent.length'),2,'pausing a pending automatic reply prevents late posts');
+  await ui.locator('#stop-button').click();
   assert.deepEqual(errors,[]);
   await mkdir(join(root,'output/playwright'),{recursive:true});
-  await ui.screenshot({path:join(root,'output/playwright/desktop-integration.png')});
-  const results={ok:true,checks:['desktop bootstrap','remote isolation','API settings','local chat and transcription tests','real tab audio to WAV to HTTP','model candidate','manual send and echo','pause and stop'],requests};
+  const screenshot=await application.evaluate(async({BrowserWindow})=>{
+    const image=await BrowserWindow.getAllWindows()[0].webContents.capturePage(undefined,{stayHidden:true,stayAwake:true});
+    return image.toPNG().toString('base64');
+  });
+  if(screenshot)await writeFile(join(root,'output/playwright/desktop-integration.png'),Buffer.from(screenshot,'base64'));
+  const results={ok:true,checks:['desktop bootstrap','remote isolation','API settings and provider switching','local chat and transcription tests','real tab audio to WAV to HTTP','model candidate','manual send and echo','automatic countdown and single send','pause pending reply without late post','stop'],requests};
   await writeFile(join(root,'output/playwright/desktop-integration.json'),JSON.stringify(results,null,2));
   console.log(JSON.stringify(results,null,2));
+}catch(error){
+  console.error(stderr.join(''));
+  throw error;
 }finally{
   await application?.close();await new Promise(resolve=>server.close(resolve));
   assert.equal(dirname(resolve(profile)),resolve(tmpdir()));assert.ok(basename(profile).startsWith('live-companion-app-smoke-'));

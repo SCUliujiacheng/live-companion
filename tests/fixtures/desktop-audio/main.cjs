@@ -1,15 +1,20 @@
 const { app, BrowserWindow, WebContentsView, session, protocol } = require('electron');
 const { readFile } = require('node:fs/promises');
 const path = require('node:path');
+const { pathToFileURL } = require('node:url');
 
 const root = process.argv[process.argv.indexOf('--smoke-root') + 1];
 const profile = process.argv[process.argv.indexOf('--smoke-profile') + 1];
 if (!root || !profile) throw new Error('Audio smoke fixture requires explicit root and temporary profile paths');
 app.setPath('userData', profile);
-protocol.registerSchemesAsPrivileged([{ scheme: 'audio-smoke', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } }]);
+protocol.registerSchemesAsPrivileged([{ scheme: 'companion', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } }]);
 
 globalThis.audioSmoke = { ready: null, permissionLog: [] };
 globalThis.audioSmoke.ready = app.whenReady().then(async () => {
+  const { createCapturePermissionGate } = await import(pathToFileURL(path.join(root, 'desktop/capture-permission.js')));
+  const receiverURL = 'companion://app/receiver.html';
+  const capturePermission = createCapturePermissionGate({ trustedURL: receiverURL });
+  globalThis.audioSmoke.capturePermission = capturePermission;
   const trustedSession = session.fromPartition('persist:audio-smoke-trusted');
   const sourceSession = session.fromPartition('persist:audio-smoke-source');
   const otherSession = session.fromPartition('persist:audio-smoke-other');
@@ -19,9 +24,9 @@ globalThis.audioSmoke.ready = app.whenReady().then(async () => {
     ['/receiver.js', [path.join(fixtureDir, 'receiver.js'), 'text/javascript']],
     ...['capture.js', 'pcm-worklet.js', 'wav.js'].map(name => [`/extension/audio/${name}`, [path.join(root, 'extension/audio', name), 'text/javascript']]),
   ]);
-  trustedSession.protocol.handle('https', async request => {
+  trustedSession.protocol.handle('companion', async request => {
     const url = new URL(request.url);
-    const file = url.hostname === 'capture.audio-smoke.invalid' && allowed.get(url.pathname);
+    const file = url.hostname === 'app' && allowed.get(url.pathname);
     if (!file) return new Response('Not found', { status: 404 });
     return new Response(await readFile(file[0]), { headers: { 'content-type': file[1] } });
   });
@@ -30,18 +35,23 @@ globalThis.audioSmoke.ready = app.whenReady().then(async () => {
     ses.protocol.handle('https', request => new URL(request.url).hostname.endsWith('.audio-smoke.invalid')
       ? new Response(sourceHtml, { headers: { 'content-type': 'text/html' } })
       : new Response('External networking disabled', { status: 403 }));
-    ses.setPermissionRequestHandler((_wc, permission, callback, details) => { globalThis.audioSmoke.permissionLog.push({ sourceSession: true, phase: 'request', permission, details }); callback(false); });
+    ses.setPermissionRequestHandler((wc, permission, callback, details) => {
+      const state = globalThis.audioSmoke;
+      const allowed = capturePermission.request(wc, permission, details);
+      state.permissionLog.push({ sourceSession: true, phase: 'request', permission, source: wc === state.source?.webContents, allowed, details });
+      callback(allowed);
+    });
     ses.setPermissionCheckHandler((_wc, permission, origin, details) => { globalThis.audioSmoke.permissionLog.push({ sourceSession: true, phase: 'check', permission, origin, details }); return false; });
   }
   const preferences = { contextIsolation: true, sandbox: true, nodeIntegration: false, backgroundThrottling: false };
   const receiver = new BrowserWindow({ show: false, webPreferences: { ...preferences, session: trustedSession } });
   trustedSession.setPermissionRequestHandler((wc, permission, callback, details) => {
     globalThis.audioSmoke.permissionLog.push({ phase: 'request', permission, receiver: wc === receiver.webContents, details });
-    callback(wc === receiver.webContents && permission === 'media');
+    callback(false);
   });
   trustedSession.setPermissionCheckHandler((wc, permission, requestingOrigin, details) => {
     globalThis.audioSmoke.permissionLog.push({ phase: 'check', permission, receiver: wc === receiver.webContents, requestingOrigin, details });
-    return wc === receiver.webContents && permission === 'media';
+    return false;
   });
   const host = new BrowserWindow({ show: false, webPreferences: preferences });
   const source = new WebContentsView({ webPreferences: { ...preferences, session: sourceSession } });
@@ -55,7 +65,7 @@ globalThis.audioSmoke.ready = app.whenReady().then(async () => {
     for (const view of [source, other]) if (!view.webContents.isDestroyed()) view.webContents.close();
   });
   await Promise.all([
-    receiver.loadURL('https://capture.audio-smoke.invalid/receiver.html'),
+    receiver.loadURL(receiverURL),
     source.webContents.loadURL('https://source.audio-smoke.invalid/'),
     other.webContents.loadURL('https://other.audio-smoke.invalid/'),
   ]);

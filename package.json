@@ -27,5 +27,9 @@
     "electron": "44.3.0",
     "electron-builder": "26.15.3",
     "playwright": "1.63.0"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "4.3.1",
+    "jose": "6.2.12"
   }
 }

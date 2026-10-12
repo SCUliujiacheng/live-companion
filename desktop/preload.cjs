@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld('desktopAPI',Object.freeze({
   onState:subscribe('companion-state'),
   onCapture:subscribe('companion-capture'),
   onRoomStatus:subscribe('companion-room-status'),
+  onAIState:subscribe('companion-ai-state'),
   captureEvent:(type,payload={})=>ipcRenderer.send('companion-capture-event',{type,payload}),
   getVersion:()=>ipcRenderer.invoke('companion-version'),
 }));

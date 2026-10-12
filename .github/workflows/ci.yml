@@ -1,7 +1,8 @@
-name: Test extension
+name: Verify and build
 on:
   push:
   pull_request:
+  workflow_dispatch:
 permissions:
   contents: read
 jobs:
@@ -12,9 +13,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Install browser test tools
+      - name: Install locked dependencies and browser test tools
         run: |
-          npm install --no-save --package-lock=false playwright
+          npm ci
           npx playwright install --with-deps chromium
       - name: Native and browser fixture tests
         run: npm test
@@ -29,3 +30,21 @@ jobs:
         with:
           name: extension-packages
           path: dist/*.zip
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - name: Build Windows installer and portable application
+        run: npm run desktop:dist
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-applications
+          path: dist-desktop/*.exe

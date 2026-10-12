@@ -13,6 +13,7 @@ let eventSignature = '';
 let logSignature = '';
 let lastStateError = '';
 const formBaseUrls = {};
+const usesAccountAI = () => isDesktop && document.body.dataset.aiMode === 'chatgpt-local';
 
 function announce(message, kind = 'success') {
   $('feedback').textContent = message;
@@ -72,11 +73,12 @@ function collectSettings() {
     rememberKeys: $('remember-keys').checked,
   };
   for (const kind of ['chat', 'transcription']) {
-    settings[kind] = {
+    settings[kind] = usesAccountAI() ? { ...savedSettings[kind] } : {
       baseUrl: cleanBase($(`${kind}-base-url`).value),
       apiKey: $(`${kind}-api-key`).value.trim(), model: $(`${kind}-model`).value.trim(),
     };
   }
+  if (usesAccountAI()) settings.rememberKeys = savedSettings.rememberKeys;
   return normalizeSettings(settings);
 }
 
@@ -111,7 +113,7 @@ async function saveFromGesture(testKind = null) {
     if (!(await permissionPromise)) throw new Error('未获得 API 站点访问权限，设置未保存。');
     await command('save-settings', { settings });
     savedSettings = { ...settings, chat: { ...settings.chat }, transcription: { ...settings.transcription } };
-    announce(settings.rememberKeys ? (isDesktop ? '设置已保存。密钥已使用系统加密保存在这台电脑。' : '设置已保存。密钥将保留在这台电脑。') : isDesktop ? '设置已保存。密钥仅在本次应用会话中保留。' : '设置已保存。密钥仅在本次浏览器会话中保留。');
+    announce(usesAccountAI() ? '设置已保存。昵称和聊天偏好将用于下一次接话。' : settings.rememberKeys ? (isDesktop ? '设置已保存。密钥已使用系统加密保存在这台电脑。' : '设置已保存。密钥将保留在这台电脑。') : isDesktop ? '设置已保存。密钥仅在本次应用会话中保留。' : '设置已保存。密钥仅在本次浏览器会话中保留。');
     if (testKind) {
       output.textContent = testKind === 'chat' ? '正在测试聊天模型…' : '正在检查转写服务连接…';
       const result = await command('test-api', { kind: testKind });
@@ -144,7 +146,7 @@ function showSettings(open) {
 
 async function clearLocalData() {
   if (!hasRuntime || !settingsLoaded || settingsBusy || actionBusy) return;
-  if (!window.confirm('清除本机设置与密钥？\n\n这会停止监听，删除本机保存的设置、API Key、本次转写、弹幕上下文和运行记录。已发送到直播间或 AI 服务的数据不会被删除。')) return;
+  if (!window.confirm(isDesktop ? '清除聊天设置、API 与上下文？\n\n这会停止陪聊，删除昵称、聊天偏好、API 密钥、本次转写、弹幕上下文和运行记录。保留 B 站登录、ChatGPT 连接与本地识音模型。已发送的数据不会被删除。' : '清除本机设置与密钥？\n\n这会停止监听，删除本机保存的设置、API Key、本次转写、弹幕上下文和运行记录。已发送到直播间或 AI 服务的数据不会被删除。')) return;
   settingsBusy = true;
   renderControls();
   try {
@@ -160,7 +162,7 @@ async function clearLocalData() {
     document.querySelector('input[name="mode"][value="review"]').checked = true;
     updateModeDescription();
     renderState(result.state || { status: 'idle', room: null, mode: 'review', singing: false, level: 0, events: [], logs: [], pending: null, sentCount: 0, error: '', activity: '已清除本机数据', pausedReason: '' });
-    announce('监听已停止，本机设置、密钥和本次上下文已清除。');
+    announce(isDesktop ? '陪聊已停止，聊天设置、API 密钥与本次上下文已清除。账号连接和识音模型已保留。' : '监听已停止，本机设置、密钥和本次上下文已清除。');
   } catch (error) {
     announce(error.message, 'error');
   } finally {
@@ -182,13 +184,15 @@ function updateModeDescription() {
 function renderControls() {
   const active = ['starting', 'listening', 'paused'].includes(state.status);
   const disabled = !hasRuntime || !settingsLoaded || actionBusy;
+  const accountAI = usesAccountAI();
+  for (const section of document.querySelectorAll('[data-api-only]')) section.hidden = accountAI;
   for (const input of document.querySelectorAll('#settings-form input, #settings-form select, #settings-form textarea, #settings-form .reveal-key')) {
-    input.disabled = !settingsLoaded;
+    input.disabled = !settingsLoaded || settingsBusy || (accountAI && Boolean(input.closest('[data-api-only]')));
   }
   $('start-button').hidden = active;
   $('pause-button').hidden = !active;
   $('stop-button').hidden = !active;
-  $('start-button').disabled = disabled || settingsBusy;
+  $('start-button').disabled = disabled || settingsBusy || (isDesktop && document.body.dataset.aiReady !== 'true');
   $('pause-button').disabled = disabled || state.status === 'starting';
   $('stop-button').disabled = disabled;
   $('pause-button').textContent = state.status === 'starting' ? '正在连接…' : state.status === 'paused' ? '继续陪聊' : '暂停陪聊';
@@ -197,9 +201,10 @@ function renderControls() {
   $('cancel-button').disabled = disabled || !state.pending;
   $('send-now-button').disabled = disabled || !state.pending || state.status !== 'listening' || state.singing;
   $('save-settings').disabled = !hasRuntime || !settingsLoaded || settingsBusy;
-  $('test-chat').disabled = !hasRuntime || !settingsLoaded || settingsBusy;
-  $('test-transcription').disabled = !hasRuntime || !settingsLoaded || settingsBusy;
+  $('test-chat').disabled = !hasRuntime || !settingsLoaded || settingsBusy || accountAI;
+  $('test-transcription').disabled = !hasRuntime || !settingsLoaded || settingsBusy || accountAI;
   $('clear-data').disabled = !hasRuntime || !settingsLoaded || settingsBusy || actionBusy;
+  if ($('copy-chat-service')) $('copy-chat-service').disabled = !settingsLoaded || settingsBusy || accountAI;
   $('save-settings').textContent = !settingsLoaded ? '正在读取设置…' : settingsBusy ? '正在保存 / 检查…' : '保存设置';
 }
 
@@ -346,7 +351,7 @@ $('test-chat').addEventListener('click', () => { void saveFromGesture('chat'); }
 $('test-transcription').addEventListener('click', () => { void saveFromGesture('transcription'); });
 $('clear-data').addEventListener('click', () => { void clearLocalData(); });
 $('start-button').addEventListener('click', () => {
-  if (!savedSettings.chat.apiKey || !savedSettings.transcription.apiKey) {
+  if (!usesAccountAI() && (!savedSettings.chat.apiKey || !savedSettings.transcription.apiKey)) {
     showSettings(true);
     announce('先填写聊天和转写服务的 API Key 并保存，就可以开始陪聊。', 'error');
     return;
@@ -354,6 +359,7 @@ $('start-button').addEventListener('click', () => {
   announce('');
   void runAction('start', { mode: selectedMode() });
 });
+if (isDesktop) window.addEventListener('desktop-ai-state', renderControls);
 $('pause-button').addEventListener('click', () => { void runAction(state.status === 'paused' ? 'resume' : 'pause'); });
 $('stop-button').addEventListener('click', () => { void runAction('stop'); });
 $('cancel-button').addEventListener('click', () => { void runAction('cancel'); });

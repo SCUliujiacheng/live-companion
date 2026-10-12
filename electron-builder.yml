@@ -5,6 +5,11 @@ directories:
 files:
   - desktop/main.js
   - desktop/controller.js
+  - desktop/capture-permission.js
+  - desktop/ai-router.js
+  - desktop/chatgpt-client.js
+  - desktop/local-speech.js
+  - desktop/local-speech-worker.js
   - desktop/storage.js
   - desktop/preload.cjs
   - desktop/generated/room-preload.cjs
@@ -17,14 +22,18 @@ files:
   - LICENSE
   - package.json
 asar: true
+asarUnpack:
+  - desktop/local-speech-worker.js
+  - node_modules/**
 compression: normal
 win:
+  icon: desktop/generated/app.ico
   target:
     - target: nsis
       arch: [x64]
     - target: portable
       arch: [x64]
-  signAndEditExecutable: false
+  signExecutable: false
 nsis:
   oneClick: true
   perMachine: false

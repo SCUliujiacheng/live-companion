@@ -4,11 +4,15 @@ import {join,resolve,relative,isAbsolute} from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import {DesktopController} from './controller.js';
 import {createSettingsStore} from './storage.js';
+import {createAIRouter} from './ai-router.js';
+import {createCapturePermissionGate} from './capture-permission.js';
 
 const root=resolve(fileURLToPath(new URL('..',import.meta.url)));
 const UI_URL='companion://app/desktop/ui/index.html';
+const capturePermission=createCapturePermissionGate({trustedURL:UI_URL});
 const PUBLIC_LINKS=new Set(['github.com','platform.openai.com','developers.openai.com']);
-let win,liveView,controller,roomSession,powerBlock=null,closing=false;
+let win,liveView,controller,roomSession,aiRouter,powerBlock=null,closing=false;
+const AI_COMMANDS=new Set(['ai-get-state','ai-set-mode','chatgpt-sign-in','chatgpt-cancel-sign-in','chatgpt-sign-out','chatgpt-select-account','chatgpt-select-model','chatgpt-test','chatgpt-usage','local-speech-prepare']);
 const roomPending=new Map(),capturePending=new Map();
 let captureSession=null,roomState={url:'',title:'',loading:false,loggedIn:null};
 protocol.registerSchemesAsPrivileged([{scheme:'companion',privileges:{standard:true,secure:true,supportFetchAPI:true,corsEnabled:true,stream:true}}]);
@@ -69,23 +73,18 @@ async function captureStart(sessionId){
   const room=roomInfo(liveView?.webContents.getURL());
   if(!room||room.roomId!==controller?.room?.roomId||sessionId!==controller?.sessionId||win?.webContents.getURL()!==UI_URL)return {ok:false,error:'直播间或声音捕获会话已改变'};
   captureSession=sessionId;
+  let grant;
   try{
+    grant=capturePermission.grant(liveView.webContents,win.webContents);
     const streamId=liveView.webContents.getMediaSourceId(win.webContents);
     const result=await rpc(capturePending,win.webContents,'companion-capture',{type:'start',streamId,sessionId},15000);
     if(captureSession!==sessionId||controller?.sessionId!==sessionId||roomInfo(liveView?.webContents.getURL())?.roomId!==room.roomId)return {ok:false,error:'声音捕获已取消或直播间已改变'};
     if(!result?.ok)captureSession=null;
     return result;
   }catch{if(captureSession===sessionId)captureSession=null;return {ok:false,error:'无法连接直播声音，请重新打开直播间后再试'};}
+  finally{if(grant)capturePermission.revoke(grant);}
 }
-async function captureStop(){captureSession=null;return rpc(capturePending,win?.webContents,'companion-capture',{type:'stop'},16000);}
-function mediaPermission(contents,permission,origin,details={}){
-  if(!captureSession||captureSession!==controller?.sessionId||contents!==win?.webContents||contents?.getURL()!==UI_URL||permission!=='media'||details.isMainFrame===false)return false;
-  if(details.requestingUrl&&details.requestingUrl!==UI_URL)return false;
-  if(details.mediaType&&details.mediaType!=='audio'&&details.mediaType!=='unknown')return false;
-  if(Array.isArray(details.mediaTypes)&&details.mediaTypes.some(type=>type!=='audio'))return false;
-  try{const url=new URL(origin||details.securityOrigin||details.requestingUrl||'');return url.protocol==='companion:'&&url.hostname==='app'&&!url.port&&!url.username&&!url.password;}
-  catch{return false;}
-}
+async function captureStop(){captureSession=null;capturePermission.revoke();return rpc(capturePending,win?.webContents,'companion-capture',{type:'stop'},16000);}
 function emit(state){
   const active=['listening','starting','paused'].includes(state.status);
   if(active&&powerBlock===null)powerBlock=powerSaveBlocker.start('prevent-app-suspension');
@@ -115,18 +114,25 @@ async function boot(){
   });
   const store=createSettingsStore(app.getPath('userData'),safeStorage);
   roomSession=session.fromPartition('persist:bilibili-room');
-  roomSession.setPermissionRequestHandler((_contents,_permission,callback)=>callback(false));
+  roomSession.setPermissionRequestHandler((contents,permission,callback,details)=>callback(Boolean(captureSession&&captureSession===controller?.sessionId&&capturePermission.request(contents,permission,details))));
   roomSession.setPermissionCheckHandler(()=>false);
   win=new BrowserWindow({width:1500,height:940,minWidth:1120,minHeight:700,show:false,title:'直播搭子',backgroundColor:'#131619',icon:join(root,'extension/icons/icon-128.png'),webPreferences:{preload:join(root,'desktop/preload.cjs'),contextIsolation:true,nodeIntegration:false,sandbox:true,backgroundThrottling:false,spellcheck:false}});
-  win.webContents.session.setPermissionCheckHandler(mediaPermission);
-  win.webContents.session.setPermissionRequestHandler((contents,permission,callback,details={})=>callback(mediaPermission(contents,permission,details.securityOrigin||details.requestingUrl,details)));
+  win.webContents.session.setPermissionCheckHandler(()=>false);
+  win.webContents.session.setPermissionRequestHandler((_contents,_permission,callback)=>callback(false));
   liveView=new WebContentsView({webPreferences:{preload:join(root,'desktop/generated/room-preload.cjs'),session:roomSession,contextIsolation:true,nodeIntegration:false,sandbox:true,backgroundThrottling:false,spellcheck:false}});
   win.contentView.addChildView(liveView);layout();
-  controller=new DesktopController({...store,roomCommand,captureStart,captureStop,emit});
+  aiRouter=createAIRouter({directory:app.getPath('userData'),encryption:safeStorage,openExternal:url=>shell.openExternal(url),onChange:state=>sendUI('companion-ai-state',state)});
+  controller=new DesktopController({...store,roomCommand,captureStart,captureStop,emit,
+    generate:aiRouter.generate,transcribe:aiRouter.transcribe,validateProviders:aiRouter.ensureReady});
   ipcMain.handle('companion-version',event=>{if(!isUI(event))throw new Error('消息来源无效');return app.getVersion();});
   ipcMain.handle('companion-command',async(event,{type,payload={}}={})=>{
     if(!isUI(event))return {ok:false,error:'消息来源无效'};
     try{
+      if(AI_COMMANDS.has(type)){
+        if(type==='chatgpt-sign-out')await controller.command('stop');
+        else if(!['ai-get-state','chatgpt-usage','chatgpt-cancel-sign-in'].includes(type)&&(controller.sessionId||controller.starting||controller.stopping))return {ok:false,error:'请先结束陪聊，再更换或测试 AI 接入'};
+        return await aiRouter.command(type,payload);
+      }
       if(type==='open-room')return openRoom(payload.url);
       if(type==='reload-room'){await controller.setRoom(null);liveView.webContents.reload();return {ok:true};}
       if(type==='logout-room'){await controller.setRoom(null);await roomSession.clearStorageData();await liveView.webContents.loadURL('https://www.bilibili.com/');status({loggedIn:false});return {ok:true};}
@@ -166,7 +172,7 @@ async function boot(){
   win.on('resize',layout);
   win.on('close',event=>{
     if(closing)return;event.preventDefault();closing=true;
-    void controller.command('stop').finally(()=>{if(liveView&&!liveView.webContents.isDestroyed())liveView.webContents.close();win.destroy();app.quit();});
+    void controller.command('stop').then(()=>aiRouter.close()).finally(()=>{if(liveView&&!liveView.webContents.isDestroyed())liveView.webContents.close();win.destroy();app.quit();}).catch(()=>{});
     setTimeout(()=>{if(win&&!win.isDestroyed())win.destroy();app.quit();},2000).unref();
   });
   Menu.setApplicationMenu(Menu.buildFromTemplate([{label:'直播搭子',submenu:[{label:'结束陪聊',click:()=>void controller.command('stop')},{type:'separator'},{role:'quit',label:'退出'}]},{label:'编辑',submenu:[{role:'undo'},{role:'redo'},{type:'separator'},{role:'cut'},{role:'copy'},{role:'paste'},{role:'selectAll'}]}]));

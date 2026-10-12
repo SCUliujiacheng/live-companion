@@ -10,7 +10,7 @@
   <link rel="stylesheet" href="app.css">
   <script src="app.js" type="module"></script>
 </head>
-<body data-ready="false" class="desktop-app">
+<body data-ready="false" data-ai-mode="chatgpt-local" data-ai-ready="false" class="desktop-app">
   <header class="desktop-toolbar">
     <div class="desktop-wordmark"><span class="desktop-logo" aria-hidden="true">✦</span><span>直播搭子<small id="desktop-version">桌面版</small></span></div>
     <form id="room-form" class="desktop-room-form" autocomplete="off">
@@ -20,11 +20,11 @@
       <button id="open-room-button" type="submit" class="button primary">打开直播间 <span aria-hidden="true">↗</span></button>
     </form>
     <button id="reload-room-button" type="button" class="icon-button desktop-reload" title="刷新直播页面" aria-label="刷新直播页面"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M19.7 9A8 8 0 1 0 20 14M20 4v5h-5"/></svg></button>
-    <button id="logout-room-button" type="button" class="button desktop-logout">退出登录</button>
+    <button id="logout-room-button" type="button" class="button desktop-logout">退出 B 站</button>
     <div id="room-toolbar-status" class="desktop-room-status" role="status"><i></i><span>登录待确认</span></div>
   </header>
   <section class="desktop-live-stage" aria-label="内嵌 B 站直播页面区域">
-    <div class="desktop-stage-placeholder"><span class="stage-orbit" aria-hidden="true">✦</span><h2>先打开主播的直播间</h2><p>在左侧登录 B 站，在右侧填写 API。<br>一切准备好，就让搭子陪你接接话。</p><span class="stage-steps">登录 B 站 <b>→</b> 填写 API <b>→</b> 开始陪聊</span></div>
+    <div class="desktop-stage-placeholder"><span class="stage-orbit" aria-hidden="true">✦</span><h2>先打开主播的直播间</h2><p>在左侧登录 B 站，在右侧连接 AI。<br>一切准备好，就让搭子陪你接接话。</p><span class="stage-steps">登录 B 站 <b>→</b> 连接 AI <b>→</b> 开始陪聊</span></div>
   </section>
   <aside id="desktop-sidebar" class="desktop-sidebar" aria-label="AI 陪聊控制面板">
   <div class="app-shell">
@@ -33,16 +33,18 @@
         <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
         <div><h1>直播搭子</h1><p>听得懂，也接得住。</p></div>
       </div>
-      <button class="icon-button" id="open-settings" type="button" aria-label="打开 API 与聊天设置" title="设置">
+      <button class="icon-button desktop-settings-button" id="open-settings" type="button" aria-label="打开 AI 与聊天设置" title="AI 与聊天设置">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7Z"/><path d="m9.1 3-.6 2.2-2 .9-2.1-.5-2 3.4L4 10.7v2.6l-1.6 1.7 2 3.4 2.1-.5 2 .9.6 2.2h3.8l.6-2.2 2-.9 2.1.5 2-3.4-1.6-1.7v-2.6L19.6 9l-2-3.4-2.1.5-2-.9-.6-2.2Z" transform="translate(1 0)"/></svg>
+        <span>AI 设置</span>
       </button>
     </header>
 
-    <div id="desktop-login-notice" class="desktop-login-notice" role="status"><span class="login-step">01</span><p>请先在左侧 B 站页面登录你的观众账号，再开始陪聊。</p></div>
+    <div id="desktop-login-notice" class="desktop-login-notice" role="status"><span class="login-step">01</span><p>请在左侧 B 站页面确认登录。已登录后，连接 AI、打开直播间即可开始。</p></div>
     <div id="preview-banner" class="notice preview-notice" hidden>桌面界面预览 · 启动应用后可连接直播间</div>
     <div id="feedback" class="notice" role="status" hidden></div>
 
     <main id="companion-view">
+      <button id="ai-summary" class="ai-summary" type="button"><span><strong id="ai-summary-title">ChatGPT + 本地识音</strong><small id="ai-summary-detail">正在读取 AI 连接…</small></span><span aria-hidden="true">↗</span></button>
       <section class="room-card" aria-labelledby="room-title">
         <div class="eyebrow-row"><span class="eyebrow">BILIBILI LIVE</span><span id="status-badge" class="status-badge" data-status="idle"><i></i><span id="status-label">未开始</span></span></div>
         <h2 id="room-title">准备好，陪主播聊会儿</h2>
@@ -63,7 +65,7 @@
           <button type="button" id="stop-button" class="button secondary stop-button" hidden>结束</button>
         </div>
         <label class="singing-control"><span><strong>主播正在唱歌</strong><small>打开后暂停生成和发送，专心听歌</small></span><input id="singing-toggle" type="checkbox" role="switch"><span class="switch-track" aria-hidden="true"></span></label>
-        <p class="privacy-note">音频片段和最近弹幕将发送给你填写的 AI 服务。</p>
+        <p id="ai-privacy-note" class="privacy-note">声音在本机转成文字；转写和最近弹幕发送给 ChatGPT。</p>
       </section>
 
       <section class="candidate-card" id="candidate-card" aria-labelledby="candidate-heading">
@@ -89,11 +91,40 @@
     </main>
 
     <main id="settings-view" hidden>
-      <div class="settings-heading"><button id="close-settings" type="button" class="back-button" aria-label="返回陪聊">←</button><div><h2>API 与聊天设置</h2><p>用你选择的服务，聊出熟悉的语气。</p></div></div>
+      <div class="settings-heading"><button id="close-settings" type="button" class="back-button" aria-label="返回陪聊">←</button><div><h2>AI 与聊天设置</h2><p>用你选择的服务，聊出熟悉的语气。</p></div></div>
+      <section class="settings-card ai-connection-card" aria-labelledby="ai-connection-heading">
+        <div class="section-heading"><h3 id="ai-connection-heading">连接 AI</h3><span class="subtle-tag">两种方式</span></div>
+        <fieldset id="ai-mode-picker" class="ai-mode-picker" disabled>
+          <legend class="sr-only">AI 接入方式</legend>
+          <label><input type="radio" name="ai-mode" value="chatgpt-local" checked><span><strong>登录账号</strong><small>ChatGPT + 本地识音</small></span></label>
+          <label><input type="radio" name="ai-mode" value="api"><span><strong>填写 API</strong><small>自选兼容服务</small></span></label>
+        </fieldset>
+        <p id="ai-route-note" class="section-helper">账号连接和模型选择即时保存；切换前请先结束陪聊。</p>
+        <p id="ai-feedback" class="test-result" role="status" hidden></p>
+        <div id="chatgpt-connection">
+          <div class="ai-account-status"><span class="ai-status-dot" id="chatgpt-status-dot"></span><div><strong id="chatgpt-status">正在读取连接…</strong><p id="chatgpt-account">在官方页面登录，无需填写 API Key。</p></div></div>
+          <button id="chatgpt-sign-in" type="button" class="button primary ai-wide-button" disabled>Continue with ChatGPT</button>
+          <button id="chatgpt-cancel-sign-in" type="button" class="button secondary ai-wide-button" hidden>取消登录</button>
+          <p id="chatgpt-sign-in-note" class="field-help">浏览器会打开官方登录页面，请自行完成授权。使用账号可用额度，不含无限免费调用。</p>
+          <div id="chatgpt-connected-controls" hidden>
+            <label class="field" id="chatgpt-account-field" hidden>已保存账号 <select id="chatgpt-account-select"></select></label>
+            <label class="field">聊天模型 <select id="chatgpt-model" disabled><option value="">使用账号默认模型</option></select></label>
+            <div class="ai-action-row"><button id="chatgpt-test" type="button" class="button secondary">测试聊天</button><button id="chatgpt-usage" type="button" class="button quiet">管理用量 ↗</button></div>
+            <div class="ai-action-row ai-account-actions"><button id="chatgpt-add-account" type="button" class="button quiet">换个账号</button><button id="chatgpt-sign-out" type="button" class="button quiet">断开 ChatGPT</button></div>
+          </div>
+          <div class="local-speech-card">
+            <div class="section-heading"><h3>本地声音识别</h3><span id="local-speech-status" class="subtle-tag">待准备</span></div>
+            <p id="local-speech-message" class="section-helper">首次需下载识音模型，以后直接复用。直播声音留在本机处理，不使用麦克风。</p>
+            <progress id="local-speech-progress" max="100" aria-label="本地识音模型下载进度" hidden></progress>
+            <button id="local-speech-prepare" type="button" class="button secondary ai-wide-button" disabled>下载并准备识音模型</button>
+          </div>
+        </div>
+        <p id="api-route-description" class="section-helper" hidden>分别配置聊天与声音转文字，可来自不同服务。费用和数据处理规则由对应服务商决定。</p>
+      </section>
       <form id="settings-form" autocomplete="off">
-        <section class="settings-card" aria-labelledby="chat-config-heading">
+        <section class="settings-card" data-api-only hidden aria-labelledby="chat-config-heading">
           <div class="section-heading"><h3 id="chat-config-heading">聊天模型</h3><span class="subtle-tag">OpenAI 兼容</span></div>
-          <p class="section-helper">默认 OpenAI，也可以填写兼容服务的地址和模型。</p>
+          <p class="section-helper">默认 OpenAI。其他服务需兼容 OpenAI 聊天接口，地址、Key 和模型需来自同一服务。</p>
           <label class="field">API 地址 <input id="chat-base-url" name="chat-base-url" type="url" value="https://api.openai.com/v1" placeholder="https://api.openai.com/v1" required spellcheck="false" inputmode="url"><span class="field-help">填写 Base URL，通常以 /v1 结尾。</span></label>
           <label class="field">API Key <span class="password-field"><input id="chat-api-key" name="chat-api-key" type="password" placeholder="填写聊天服务密钥" autocomplete="off" spellcheck="false"><button type="button" class="reveal-key" data-input="chat-api-key" aria-label="显示聊天密钥">显示</button></span></label>
           <label class="field">模型名称 <input id="chat-model" name="chat-model" type="text" value="gpt-4.1-mini" placeholder="gpt-4.1-mini" required spellcheck="false"></label>
@@ -101,9 +132,11 @@
           <p id="chat-test-result" class="test-result" role="status" hidden></p>
         </section>
 
-        <section class="settings-card" aria-labelledby="transcription-config-heading">
+        <section class="settings-card" data-api-only hidden aria-labelledby="transcription-config-heading">
           <div class="section-heading"><h3 id="transcription-config-heading">声音转文字</h3><span class="subtle-tag">可独立配置</span></div>
-          <p class="section-helper">服务需要支持音频转写；只捕获直播声音，不使用麦克风。</p>
+          <p class="section-helper">听懂主播需要独立的转写模型，纯聊天服务可能不支持。只捕获直播声音，不使用麦克风。</p>
+          <button id="copy-chat-service" type="button" class="button secondary copy-provider-button" disabled>使用聊天服务的地址和 Key</button>
+          <p class="field-help">仅在同一服务同时支持聊天与转写时使用；转写模型仍单独填写。</p>
           <label class="field">API 地址 <input id="transcription-base-url" name="transcription-base-url" type="url" value="https://api.openai.com/v1" placeholder="https://api.openai.com/v1" required spellcheck="false" inputmode="url"></label>
           <label class="field">API Key <span class="password-field"><input id="transcription-api-key" name="transcription-api-key" type="password" placeholder="填写转写服务密钥" autocomplete="off" spellcheck="false"><button type="button" class="reveal-key" data-input="transcription-api-key" aria-label="显示转写密钥">显示</button></span><span class="field-help">使用同一服务时，在这里填入相同密钥。</span></label>
           <label class="field">模型名称 <input id="transcription-model" name="transcription-model" type="text" value="gpt-4o-mini-transcribe" placeholder="gpt-4o-mini-transcribe" required spellcheck="false"></label>
@@ -121,9 +154,9 @@
           <p class="field-help">发言间隔是最短等待时间；没有合适的话题会继续安静。</p>
         </section>
 
-        <section class="key-storage"><label><input id="remember-keys" name="remember-keys" type="checkbox"><span><strong>在这台电脑上加密保存 API Key</strong><small>不勾选时，仅在本次应用会话中保留密钥。</small></span></label><p>使用 Windows 系统加密保存；公用电脑请勿勾选。</p></section>
-        <section class="clear-data-section"><button id="clear-data" type="button" class="button secondary">清除本机设置与密钥</button><p>同时停止监听并清除本次转写、弹幕上下文与运行记录。不会删除已发送到直播间或 AI 服务的数据。</p></section>
-        <div class="settings-footer"><button id="save-settings" type="submit" class="button primary">保存设置</button><p>密钥只发送给你填写的对应 API 地址。</p><p class="privacy-footer"><a href="https://github.com/SCUliujiacheng/live-companion/blob/main/PRIVACY.md" target="_blank" rel="noopener noreferrer">隐私与数据说明 ↗</a></p></div>
+        <section class="key-storage" data-api-only hidden><label><input id="remember-keys" name="remember-keys" type="checkbox"><span><strong>在这台电脑上加密保存 API Key</strong><small>不勾选时，仅在本次应用会话中保留密钥。</small></span></label><p>使用 Windows 系统加密保存；公用电脑请勿勾选。</p></section>
+        <section class="clear-data-section"><button id="clear-data" type="button" class="button secondary">清除聊天设置、API 与上下文</button><p>停止陪聊并清除昵称、聊天偏好、API 密钥和本次记录。保留 B 站登录、ChatGPT 连接与识音模型；账号请单独退出或断开。</p></section>
+        <div class="settings-footer"><div class="desktop-settings-actions"><button id="return-to-chat" type="button" class="button secondary">返回陪聊</button><button id="save-settings" type="submit" class="button primary">保存设置</button></div><p>保存昵称、聊天偏好与当前显示的 API 配置。</p><p class="privacy-footer"><a href="https://github.com/SCUliujiacheng/live-companion/blob/main/PRIVACY.md" target="_blank" rel="noopener noreferrer">隐私与数据说明 ↗</a></p></div>
       </form>
     </main>
   </div>

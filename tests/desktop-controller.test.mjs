@@ -41,6 +41,24 @@ test('desktop refuses missing room or keys without capturing audio',async()=>{
   assert.equal(h.calls.some(call=>call.type==='capture-start'),false);
 });
 
+test('account-based providers can start with no API key after their own readiness validation',async t=>{
+  let validated=0;
+  const h=harness({loadSettings:async()=>normalizeSettings({}),validateProviders:async()=>{validated++;}});
+  t.after(()=>h.controller.command('stop'));
+  await h.controller.setRoom({roomId:'123'});
+  assert.equal((await h.controller.command('start')).ok,true);
+  assert.equal(validated,1);assert.equal(h.controller.settings.chat.apiKey,'');
+});
+
+test('provider readiness error prevents attaching or capturing and cancelling readiness cannot revive start',async t=>{
+  const waiting=deferred();const h=harness({validateProviders:()=>waiting.promise});
+  t.after(()=>h.controller.command('stop'));
+  await h.controller.setRoom({roomId:'123'});
+  const start=h.controller.command('start');await flush();await h.controller.command('stop');
+  waiting.resolve();assert.equal((await start).ok,false);
+  assert.equal(h.calls.some(call=>call.type==='attach'||call.type==='capture-start'),false);
+});
+
 test('desktop attaches exactly the selected room and passes a session id to capture',async t=>{
   const h=await started(t);const attach=h.calls.find(call=>call.type==='attach');
   assert.equal(h.controller.state.status,'listening');assert.equal(attach.roomId,'123');
