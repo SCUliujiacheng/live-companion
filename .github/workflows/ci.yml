@@ -5,14 +5,21 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: false
 jobs:
   verify:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      ONNXRUNTIME_NODE_INSTALL: skip
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+          cache: npm
       - name: Install locked dependencies and browser test tools
         run: |
           npm ci
@@ -24,14 +31,24 @@ jobs:
           npm run check
           node scripts/browser-smoke.mjs
           node scripts/config-smoke.mjs
+          npm audit --omit=dev --audit-level=moderate
       - name: Build distribution ZIPs
         run: npm run package
       - uses: actions/upload-artifact@v4
         with:
           name: extension-packages
           path: dist/*.zip
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: browser-verification
+          path: output/playwright/
   windows:
     runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      ONNXRUNTIME_NODE_INSTALL: skip
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -40,11 +57,51 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run check
+      - run: npm run desktop:build
+      - name: Native Electron source audio isolation
+        run: node scripts/desktop-audio-smoke.mjs
+      - name: Native Electron automatic send and pause cancellation fixture
+        run: node scripts/desktop-integration-smoke.mjs
+      - name: Real Chinese Whisper, cancellation, and offline restart
+        run: node scripts/desktop-local-speech-smoke.mjs --directory "${{ runner.temp }}/speech-cache"
       - name: Build Windows installer and portable application
         run: npm run desktop:dist
-        env:
-          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - name: Installed and portable application lifecycle and packaged Whisper
+        run: node scripts/windows-package-smoke.mjs --directory "${{ runner.temp }}/speech-cache"
+      - name: Hash acceptance packages
+        shell: pwsh
+        run: |
+          Get-ChildItem dist-desktop/*.exe | ForEach-Object {
+            $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
+            "$hash  $($_.Name)" | Add-Content dist-desktop/SHA256SUMS.txt
+          }
       - uses: actions/upload-artifact@v4
         with:
           name: windows-applications
-          path: dist-desktop/*.exe
+          path: |
+            dist-desktop/*.exe
+            dist-desktop/SHA256SUMS.txt
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-verification
+          path: output/
+  preview:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/wip/windows-desktop' && contains(github.event.head_commit.message, '[windows-preview]')
+    needs: [verify, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-applications
+          path: release-assets
+      - name: Publish verified Windows acceptance preview
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="v0.2.0-preview.${GITHUB_RUN_NUMBER}"
+          gh release create "$TAG" release-assets/* --target "$GITHUB_SHA" --prerelease --title "Windows 0.2.0 acceptance preview ${GITHUB_RUN_NUMBER}" --notes-file docs/WINDOWS-PREVIEW-NOTES.md

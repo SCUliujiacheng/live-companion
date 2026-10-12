@@ -21,6 +21,11 @@ files:
   - extension/sidepanel.css
   - LICENSE
   - package.json
+  # This release targets Windows x64 only. ONNX ships other OS/arch binaries
+  # in its npm tarball; they are not runtime dependencies of these artifacts.
+  - '!node_modules/onnxruntime-node/bin/napi-v*/linux/**'
+  - '!node_modules/onnxruntime-node/bin/napi-v*/darwin/**'
+  - '!node_modules/onnxruntime-node/bin/napi-v*/win32/arm64/**'
 asar: true
 asarUnpack:
   - desktop/local-speech-worker.js

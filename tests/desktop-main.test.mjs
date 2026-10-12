@@ -7,7 +7,7 @@ import vm from 'node:vm';
 import {createCapturePermissionGate} from '../desktop/capture-permission.js';
 
 const UI='companion://app/desktop/ui/index.html';
-async function fixture({failBoot=false}={}){
+async function fixture({failBoot=false,env={},argv=[]}={}){
   const windows=[],views=[],handles=new Map(),listeners=new Map(),dialogs=[],sent=[];
   let controller;
   const makeSession=()=>({setPermissionCheckHandler(fn){this.check=fn;},setPermissionRequestHandler(fn){this.request=fn;},clearStorageData:async()=>{}});
@@ -32,7 +32,7 @@ async function fixture({failBoot=false}={}){
     command(){return Promise.resolve({ok:true});}onRoomEvents(){}onSegment(){}onLevel(){}onActivity(){}onCaptureEnded(){}
     safeError(){return '安全错误';}
   }
-  const app={isPackaged:true,setName(){},requestSingleInstanceLock:()=>true,on(){},whenReady:()=>Promise.resolve(),getPath:()=>'/test-profile',getVersion:()=>'0.2.0',quit(){app.didQuit=true;}};
+  const app={isPackaged:true,setName(){},setPath(name,value){this.paths??={};this.paths[name]=value;},requestSingleInstanceLock:()=>true,on(){},whenReady:()=>Promise.resolve(),getPath:()=>'/test-profile',getVersion:()=>'0.2.0',quit(){app.didQuit=true;}};
   const context=vm.createContext({
     app,BrowserWindow:Window,WebContentsView:View,DesktopController:Controller,createSettingsStore:()=>({}),
     createAIRouter:()=>({generate(){},transcribe(){},ensureReady(){},getState:async()=>({}),command:async()=>({ok:true}),close:async()=>{}}),
@@ -40,15 +40,16 @@ async function fixture({failBoot=false}={}){
     ipcMain:{handle:(name,fn)=>handles.set(name,fn),on:(name,fn)=>listeners.set(name,fn)},
     protocol:{registerSchemesAsPrivileged(){},handle(){}},net:{},session:{fromPartition:()=>makeSession()},safeStorage:{},shell:{openExternal:async()=>{}},
     powerSaveBlocker:{start:()=>1,stop(){}},Menu:{buildFromTemplate:x=>x,setApplicationMenu(){}},dialog:{showErrorBox:(...args)=>dialogs.push(args)},
-    readFile,join,resolve,relative,isAbsolute,fileURLToPath,pathToFileURL,URL,Response,Blob,Uint8Array,Map,Set,Promise,crypto,setTimeout,clearTimeout,process:{env:{}},
+    readFile,join,resolve,relative,isAbsolute,fileURLToPath,pathToFileURL,URL,Response,Blob,Uint8Array,Map,Set,Promise,crypto,setTimeout,clearTimeout,process:{env,argv},
   });
   const source=(await readFile(new URL('../desktop/main.js',import.meta.url),'utf8')).replace(/^import[^\n]*\n/gm,'').replaceAll('import.meta.url',JSON.stringify(new URL('../desktop/main.js',import.meta.url).href));
   vm.runInContext(source,context);await new Promise(resolve=>setImmediate(resolve));
+  const initialRoomURL=views[0]?.webContents.getURL();
   if(views[0])await views[0].webContents.loadURL('https://live.bilibili.com/123');
   const uiEvent=()=>({sender:windows[0].webContents,senderFrame:windows[0].webContents.mainFrame});
   const roomEvent=()=>({sender:views[0].webContents,senderFrame:views[0].webContents.mainFrame});
   const finish=()=>vm.runInContext('for(const entry of roomPending.values())entry.finish({ok:false});for(const entry of capturePending.values())entry.finish({ok:false});',context);
-  return {context,controller,windows,views,uiSession,handles,listeners,dialogs,sent,uiEvent,roomEvent,finish,app};
+  return {initialRoomURL,context,controller,windows,views,uiSession,handles,listeners,dialogs,sent,uiEvent,roomEvent,finish,app};
 }
 
 test('desktop main blocks room sends when the live URL or session no longer matches',async t=>{
@@ -106,4 +107,20 @@ test('desktop transport send exceptions release pending entries and return a saf
 
 test('desktop boot failure shows a safe actionable dialog before exiting',async()=>{
   const f=await fixture({failBoot:true});assert.equal(f.app.didQuit,true);assert.equal(f.dialogs.length,1);assert.match(f.dialogs[0].join(' '),/启动/);assert.doesNotMatch(f.dialogs[0].join(' '),/sensitive-boot-token/);
+});
+
+
+test('packaged smoke requires explicit switch, opt-in, and absolute disposable profile',async()=>{
+  const directory=resolve('/tmp/package-smoke-profile');
+  const env={LIVE_COMPANION_PACKAGE_SMOKE:'1',LIVE_COMPANION_TEST_USER_DATA:directory};
+  const smoke=await fixture({env,argv:['app','--package-smoke']});
+  assert.equal(smoke.app.paths?.userData,directory);
+  assert.equal(smoke.initialRoomURL,'about:blank');
+  assert.equal(vm.runInContext('packageSmoke',smoke.context),true);
+  for(const options of [{env},{env:{...env,LIVE_COMPANION_PACKAGE_SMOKE:'0'},argv:['--package-smoke']},{env:{...env,LIVE_COMPANION_TEST_USER_DATA:'relative'},argv:['--package-smoke']}]){
+    const ordinary=await fixture(options);
+    assert.equal(ordinary.app.paths?.userData,undefined);
+    assert.equal(ordinary.initialRoomURL,'https://www.bilibili.com/');
+    assert.equal(vm.runInContext('packageSmoke',ordinary.context),false);
+  }
 });

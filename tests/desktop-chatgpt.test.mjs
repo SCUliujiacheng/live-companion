@@ -235,3 +235,85 @@ test('real jose validation checks signature, issuer, audience, expiry, nonce and
   }
   const token = await make(); await assert.rejects(verifyChatGPTIDToken(token.slice(0, -8) + 'abcdefgh', expected, keySet));
 });
+
+test('issued registration is durably retained before code exchange and reused after restart', async t => {
+  const f = await fixture(t); let persistedClient;
+  f.controls.tokenHandler = async () => {
+    const saved = JSON.parse(await readFile(join(f.directory, 'chatgpt-auth.json'), 'utf8'));
+    persistedClient = saved.encryptedRegistration && JSON.parse(f.encryption.decryptString(Buffer.from(saved.encryptedRegistration, 'base64')))?.clientId;
+    return new Response(JSON.stringify({ error: 'invalid_grant' }), { status: 400 });
+  };
+  await f.client.signIn(); assert.equal((await f.callback()).status, 400);
+  assert.equal(persistedClient, 'oaiapp_test_client');
+  assert.equal((await f.client.getState()).accounts.length, 0);
+  await f.client.close(); f.client = f.make(); await f.client.signIn();
+  assert.equal(f.opened.at(-1).searchParams.get('client_id'), 'oaiapp_test_client');
+  assert.equal(f.opened.at(-1).searchParams.has('id_token_hint'), false);
+});
+
+test('registration storage failure prevents exchanging a one-time authorization code', async t => {
+  const f = await fixture(t); await f.client.signIn();
+  // Occupy the atomic-write temporary pathname to simulate a real disk failure.
+  const { mkdir } = await import('node:fs/promises');
+  await mkdir(join(f.directory, 'chatgpt-auth.json.tmp'));
+  assert.equal((await f.callback()).status, 400);
+  assert.equal(f.calls.some(call => call.url.endsWith('/oauth/token')), false);
+  assert.equal((await f.client.getState()).connected, false);
+});
+
+test('failed account selection keeps the previous account active in memory and on disk', async t => {
+  const f = await fixture(t); await f.signIn(); const first = (await f.client.getState()).activeAccountId;
+  f.controls.subject = 'second-user'; await f.signIn({ addAccount: true });
+  const second = (await f.client.getState()).activeAccountId;
+  const { mkdir } = await import('node:fs/promises'); await mkdir(join(f.directory, 'chatgpt-auth.json.tmp'));
+  await assert.rejects(f.client.selectAccount(first), /保存/);
+  assert.equal((await f.client.getState()).activeAccountId, second);
+  await f.client.close(); f.client = f.make();
+  assert.equal((await f.client.getState()).activeAccountId, second);
+});
+
+test('malformed refresh scopes cannot silently inherit plan permission', async t => {
+  const f = await fixture(t); await f.signIn(); f.advance(3_590_000);
+  f.controls.tokenHandler = () => json({ access_token: 'rotated', token_type: 'Bearer', expires_in: 3600, scope: null });
+  await assert.rejects(f.client.listModels(), /权限|凭据/);
+  assert.equal(f.calls.some(call => call.url.endsWith('/models')), false);
+});
+
+test('account selection blocks inference until its durable selection completes', async t => {
+  const f = await fixture(t); await f.signIn(); const first = (await f.client.getState()).activeAccountId;
+  f.controls.subject = 'second-user'; await f.signIn({ addAccount: true }); await f.client.close();
+  let duringWrite, armed = false;
+  f.client = f.make({ encryption: { ...f.encryption, encryptString(value) {
+    if (armed) { armed = false; duringWrite = f.client.listModels().then(() => 'allowed', () => 'blocked'); }
+    return f.encryption.encryptString(value);
+  } } });
+  await f.client.getState(); armed = true;
+  await f.client.selectAccount(first);
+  assert.equal(await duringWrite, 'blocked');
+  assert.equal(f.calls.some(call => call.url.endsWith('/models')), false);
+});
+
+test('refresh without a scope field retains permission but an explicit reduced grant persists and blocks inference', async t => {
+  const f = await fixture(t); await f.signIn(); f.advance(3_590_000);
+  f.controls.tokenHandler = () => json({ access_token: 'rotated', token_type: 'Bearer', expires_in: 3600 });
+  await f.client.listModels(); assert.equal((await f.client.getState()).sharing, true);
+  const count = f.calls.filter(call => call.url.endsWith('/models')).length;
+  f.advance(3_590_000);
+  f.controls.tokenHandler = () => json({ access_token: 'identity-only', token_type: 'Bearer', expires_in: 3600, scope: 'openid profile email' });
+  await assert.rejects(f.client.listModels(), /权限/);
+  assert.equal(f.calls.filter(call => call.url.endsWith('/models')).length, count);
+  await f.client.close(); f.client = f.make();
+  assert.equal((await f.client.getState()).sharing, false);
+});
+
+test('switching accounts during refresh cannot restore or use a late token from the previous selection', async t => {
+  const f = await fixture(t); await f.signIn(); const first = (await f.client.getState()).activeAccountId;
+  f.controls.subject = 'second-user'; await f.signIn({ addAccount: true }); f.advance(3_590_000);
+  let release;
+  f.controls.tokenHandler = () => new Promise(resolve => { release = () => resolve(json({ access_token: 'late-rotated', token_type: 'Bearer', expires_in: 3600, scope: SCOPES })); });
+  const pending = f.client.listModels(); const rejected = assert.rejects(pending, error => error.name === 'AbortError');
+  await waitFor(() => Boolean(release)); await f.client.selectAccount(first); release(); await rejected;
+  await f.client.close(); f.client = f.make(); assert.equal((await f.client.getState()).activeAccountId, first);
+  const saved = JSON.parse(await readFile(join(f.directory, 'chatgpt-auth.json'), 'utf8'));
+  assert.equal(f.encryption.decryptString(Buffer.from(saved.encryptedAccounts, 'base64')).includes('late-rotated'), false);
+});

@@ -79,7 +79,7 @@ export function createChatGPTClient({ directory, encryption, openExternal, onCha
   if (!directory || typeof openExternal !== 'function' || typeof fetchImpl !== 'function') throw new TypeError('ChatGPT client requires local storage and browser transport');
   const path = join(directory, 'chatgpt-auth.json');
   let hostId = `urn:uuid:${randomUUID()}`, accounts = [], activeId = null, models = [], errorMessage = '';
-  let attempt = null, generation = 0, closed = false, signingOut = false, signInStarting = false, refreshOperation = null, retryRegistration = null;
+  let attempt = null, generation = 0, closed = false, signingOut = false, selectingAccount = false, signInStarting = false, refreshOperation = null, retryRegistration = null;
   let writeChain = Promise.resolve(), loadError = '';
   const requests = new Set();
   const selected = () => accounts.find(account => account.id === activeId) || null;
@@ -95,10 +95,10 @@ export function createChatGPTClient({ directory, encryption, openExternal, onCha
   const notify = () => { try { Promise.resolve(onChange(snapshot())).catch(() => {}); } catch { /* A closed UI cannot affect authentication. */ } };
   const abortRequests = () => { for (const controller of requests) controller.abort(); };
   const ensureOpen = () => { if (closed) throw failure('ChatGPT 连接已关闭'); };
-  function persist(nextAccounts = accounts, nextActiveId = activeId, isCurrent = () => true) {
+  function persist(nextAccounts = accounts, nextActiveId = activeId, isCurrent = () => true, nextRegistration = retryRegistration) {
     requireEncryption();
-    const serialize = (values, id) => JSON.stringify({ version: 1, hostId, activeId: id, encryptedAccounts: encryption.encryptString(JSON.stringify(values)).toString('base64') });
-    const content = serialize(nextAccounts, nextActiveId);
+    const serialize = (values, id, registration) => JSON.stringify({ version: 1, hostId, activeId: id, encryptedAccounts: encryption.encryptString(JSON.stringify(values)).toString('base64'), encryptedRegistration: encryption.encryptString(JSON.stringify(registration)).toString('base64') });
+    const content = serialize(nextAccounts, nextActiveId, nextRegistration);
     writeChain = writeChain.catch(() => {}).then(async () => {
       try {
         if (!isCurrent()) throw ABORT();
@@ -110,7 +110,7 @@ export function createChatGPTClient({ directory, encryption, openExternal, onCha
           // A cancellation can land during the atomic rename itself. Restore
           // the current in-memory registration before this serialized write
           // settles, so close()/signOut() cannot leave a cancelled login behind.
-          await writeFile(path + '.tmp', serialize(accounts, activeId), { encoding: 'utf8', mode: 0o600 });
+          await writeFile(path + '.tmp', serialize(accounts, activeId, retryRegistration), { encoding: 'utf8', mode: 0o600 });
           await rename(path + '.tmp', path);
           throw ABORT();
         }
@@ -128,6 +128,9 @@ export function createChatGPTClient({ directory, encryption, openExternal, onCha
       requireEncryption();
       const values = JSON.parse(encryption.decryptString(Buffer.from(saved.encryptedAccounts, 'base64')));
       if (!Array.isArray(values) || values.length > 50 || values.some(item => !validString(item.id, 128) || !validString(item.clientId, 256) || item.clientId === DYNAMIC_CLIENT || item.issuer !== ISSUER || !validString(item.subject, 512) || !Array.isArray(item.scopes))) throw new Error();
+      const registration = saved.encryptedRegistration ? JSON.parse(encryption.decryptString(Buffer.from(saved.encryptedRegistration, 'base64'))) : null;
+      if (registration !== null && (!validString(registration.id, 128) || !validString(registration.clientId, 256) || registration.clientId === DYNAMIC_CLIENT || Object.keys(registration).some(key => !['id', 'clientId'].includes(key)))) throw new Error();
+      retryRegistration = registration;
       accounts = values; activeId = accounts.some(item => item.id === saved.activeId) ? saved.activeId : accounts[0]?.id || null;
     } catch (error) {
       if (error.code !== 'ENOENT') loadError = '保存的 ChatGPT 登录无法读取或解密，请退出此登录后重新授权';
@@ -162,6 +165,7 @@ export function createChatGPTClient({ directory, encryption, openExternal, onCha
   const formRequest = (url, data, signal) => jsonRequest(url, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(data).toString() }, signal, 20_000);
   function tokenFields(data, previous) {
     if (!validString(data.access_token) || !/^Bearer$/i.test(data.token_type || '') || !Number.isFinite(data.expires_in) || data.expires_in <= 0 || data.expires_in > 86_400) throw failure('ChatGPT 登录凭据格式无效，请重新登录');
+    if (data.scope !== undefined && (typeof data.scope !== 'string' || data.scope.length > 8192)) throw failure('ChatGPT 授权权限凭据格式无效，请重新登录');
     if (data.refresh_token !== undefined && !validString(data.refresh_token)) throw failure('ChatGPT 续期凭据格式无效，请重新登录');
     const earliest = typeof data.earliest_refresh_at === 'number' ? data.earliest_refresh_at * (data.earliest_refresh_at < 1e12 ? 1000 : 1) : Date.parse(data.earliest_refresh_at || '');
     return { accessToken: data.access_token, refreshToken: data.refresh_token || previous?.refreshToken || '', idToken: data.id_token || previous?.idToken || '', expiresAt: now() + data.expires_in * 1000,
@@ -192,6 +196,14 @@ export function createChatGPTClient({ directory, encryption, openExternal, onCha
       const code = url.searchParams.get('code'); if (!validString(code, 4096)) throw failure('ChatGPT 登录回调缺少有效授权码');
       const current = () => attempt === target && !target.controller.signal.aborted && !closed;
       const isCurrent = () => { if (!current()) throw ABORT(); };
+      if (!target.registration) {
+        // Keep the issued client ID before consuming the one-time code. It is
+        // untrusted registration metadata, never an authenticated account.
+        target.registration = { id: randomUUID(), clientId };
+        retryRegistration = target.registration;
+        await persist(accounts, activeId, current);
+        isCurrent();
+      }
       const data = await formRequest(TOKEN, { grant_type: 'authorization_code', client_id: clientId, code, code_verifier: target.verifier, redirect_uri: target.redirectUri, resource: RESOURCE }, target.controller.signal);
       isCurrent();
       if (!validString(data.id_token)) throw failure('ChatGPT 登录未返回有效身份凭据');
@@ -200,7 +212,7 @@ export function createChatGPTClient({ directory, encryption, openExternal, onCha
       if (identity.issuer !== ISSUER || !validString(identity.subject, 512) || (target.registration?.subject && identity.subject !== target.registration.subject)) throw failure('ChatGPT 身份校验未通过，请重新登录');
       const account = { id: target.registration?.id || randomUUID(), clientId, issuer: ISSUER, subject: identity.subject, email: identity.email || '', name: identity.name || '', ...tokenFields(data) };
       const nextAccounts = [...accounts.filter(item => item.id !== account.id), account];
-      await persist(nextAccounts, account.id, current);
+      await persist(nextAccounts, account.id, current, null);
       isCurrent(); accounts = nextAccounts; activeId = account.id; models = [];
       retryRegistration = null; errorMessage = ''; loadError = ''; generation++; abortRequests(); target.succeeded = true;
       callbackResponse(res, 200, 'ChatGPT 登录完成。可以关闭此页面，回到直播搭子。');
@@ -208,26 +220,20 @@ export function createChatGPTClient({ directory, encryption, openExternal, onCha
     } catch (error) {
       if (attempt !== target) { if (!res.destroyed) callbackResponse(res, 400, '登录已取消'); return; }
       errorMessage = safe(error, 'ChatGPT 登录未完成，请重新登录').message;
-      // A new issued ID may be retried in this process after invalid_grant, but
-      // remains untrusted and is never activated or associated with an account.
-      if (error?.code === 'invalid_grant' && !target.registration) {
-        const value = new URL(req.url, target.redirectUri).searchParams.get('client_id');
-        if (validString(value, 256) && value !== DYNAMIC_CLIENT) retryRegistration = { id: randomUUID(), clientId: value };
-      }
       if (!res.destroyed) callbackResponse(res, 400, 'ChatGPT 登录未完成，请回到直播搭子查看提示。');
       stopAttempt(target); notify();
     }
   }
 
   async function signIn({ accountId, addAccount = false, enableSharing = false } = {}) {
-    if (signInStarting || signingOut) throw failure('请等待当前登录操作结束');
+    if (signInStarting || signingOut || selectingAccount) throw failure('请等待当前登录操作结束');
     signInStarting = true;
     const version = ++generation;
     try {
       await ready; ensureOpen(); requireEncryption(); if (loadError) throw failure(loadError);
       if (version !== generation) throw ABORT();
       stopAttempt(attempt, true);
-      let registration = addAccount ? null : accountId ? accounts.find(item => item.id === accountId) : selected() || retryRegistration;
+      let registration = addAccount ? retryRegistration : accountId ? accounts.find(item => item.id === accountId) : selected() || retryRegistration;
       if (accountId && !registration) throw failure('所选 ChatGPT 账号不存在');
       await persist();
       if (version !== generation || closed) throw ABORT();
@@ -256,6 +262,7 @@ export function createChatGPTClient({ directory, encryption, openExternal, onCha
 
   async function access() {
     await ready; ensureOpen();
+    if (selectingAccount) throw failure('请等待账号切换完成');
     const account = selected(), version = generation;
     if (!connected(account)) throw failure('请先登录 ChatGPT');
     if (!account.scopes.includes(SHARING)) throw failure('尚未允许使用 ChatGPT 套餐，请在登录设置中重新授权');
@@ -346,9 +353,17 @@ export function createChatGPTClient({ directory, encryption, openExternal, onCha
   async function cancelSignIn() { generation++; stopAttempt(attempt, true); errorMessage = ''; notify(); return { ok: true }; }
   async function selectAccount(id) {
     await ready; ensureOpen();
-    if (signingOut || signInStarting) throw failure('请等待当前登录操作结束');
+    if (signingOut || signInStarting || selectingAccount) throw failure('请等待当前登录操作结束');
     if (!accounts.some(account => account.id === id)) throw failure('所选 ChatGPT 账号不存在');
-    generation++; stopAttempt(attempt, true); abortRequests(); activeId = id; models = []; errorMessage = ''; await persist(); notify(); return snapshot();
+    selectingAccount = true;
+    const version = ++generation;
+    stopAttempt(attempt, true); abortRequests(); models = []; errorMessage = '';
+    const current = () => generation === version && !closed && !signingOut;
+    try {
+      await persist(accounts, id, current);
+      if (!current()) throw ABORT();
+      activeId = id; return snapshot();
+    } finally { selectingAccount = false; notify(); }
   }
   async function signOut() {
     await ready; ensureOpen(); if (signingOut) throw failure('正在退出 ChatGPT 登录，请稍候');

@@ -10,15 +10,32 @@ import {normalizeSettings} from '../extension/core/settings.js';
 export function createAIRouter({directory,encryption,openExternal,onChange=()=>{},chatgpt:providedChatGPT,speech:providedSpeech}) {
   const file=join(directory,'ai-settings.json');
   let config={mode:'chatgpt-local',chatgptModel:''},saving=false,closed=false;
+  let catalogAttempt=null,modelOperation=null;
   const notify=()=>{if(!closed)void getState().then(onChange).catch(()=>{});};
-  const chatgpt=providedChatGPT||createChatGPTClient({directory:join(directory,'chatgpt'),encryption,openExternal,onChange:notify});
+  const chatgpt=providedChatGPT||createChatGPTClient({directory:join(directory,'chatgpt'),encryption,openExternal,onChange:accountChanged});
   const speech=providedSpeech||createLocalSpeech({directory:join(directory,'speech'),onChange:notify});
   const ready=readFile(file,'utf8').then(raw=>{
     const saved=JSON.parse(raw);config={mode:saved.mode==='api'?'api':'chatgpt-local',chatgptModel:typeof saved.chatgptModel==='string'?saved.chatgptModel.slice(0,200):''};
   }).catch(()=>{});
+  function accountChanged(state){
+    notify();
+    if(closed)return;
+    if(!state.connected||!state.sharing||state.signingIn){catalogAttempt=null;return;}
+    // signIn returns when the browser opens. The eventual OAuth callback must
+    // refresh the picker itself; listing models also emits this notification.
+    if(!state.models?.length)void loadModels(state).catch(()=>{});
+  }
+  function loadModels(state,{retry=false}={}){
+    if(catalogAttempt&&catalogAttempt.accountId===state.activeAccountId&&!(retry&&catalogAttempt.settled))return catalogAttempt.promise;
+    const attempt={accountId:state.activeAccountId,failed:false,settled:false,promise:null};
+    catalogAttempt=attempt;
+    attempt.promise=Promise.resolve().then(()=>chatgpt.listModels()).catch(error=>{attempt.failed=true;if(catalogAttempt===attempt)notify();throw error;}).finally(()=>{attempt.settled=true;});
+    return attempt.promise;
+  }
   async function getState(){
     await ready;
     const account=await chatgpt.getState();
+    if(catalogAttempt?.failed&&catalogAttempt.accountId===account.activeAccountId&&!account.error)account.error='ChatGPT 模型列表加载失败，请点击测试聊天重试';
     return {...config,chatgpt:account,speech:await speech.getState()};
   }
   async function save(patch){
@@ -35,14 +52,21 @@ export function createAIRouter({directory,encryption,openExternal,onChange=()=>{
     const state=await chatgpt.getState();
     if(!state.connected)throw new Error('请先在 AI 设置中登录 ChatGPT');
     if(!state.sharing)throw new Error('请先授权直播搭子使用 ChatGPT 套餐用量');
-    const models=state.models?.length?state.models:await chatgpt.listModels();
+    if(modelOperation&&modelOperation.accountId===state.activeAccountId)return modelOperation.promise;
+    const operation={accountId:state.activeAccountId,promise:null};
+    modelOperation=operation;
+    operation.promise=resolveModel(state).finally(()=>{if(modelOperation===operation)modelOperation=null;});
+    return operation.promise;
+  }
+  async function resolveModel(state){
+    const models=state.models?.length?state.models:await loadModels(state,{retry:true});
     if(!Array.isArray(models)||!models.length)throw new Error('当前 ChatGPT 账号没有可用模型，请检查套餐与用量');
     let selected=models.find(item=>item.id===config.chatgptModel);
     if(!selected){selected=models.find(item=>/luna|mini/i.test(item.id))||models[0];await save({chatgptModel:selected.id});}
     return selected.id;
   }
   async function ensureReady(settings){
-    await ready;if(saving)throw new Error('请等待 AI 接入设置保存完成');
+    await ready;if(saving&&!modelOperation)throw new Error('请等待 AI 接入设置保存完成');
     if(config.mode==='api'){
       if(!settings.chat.apiKey||!settings.transcription.apiKey)throw new Error('请填写聊天和语音转写 API Key');
     }else{

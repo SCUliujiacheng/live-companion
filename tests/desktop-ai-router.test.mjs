@@ -63,3 +63,119 @@ test('models must come from the selected account catalog and usage opens the off
   assert.equal((await f.router.getState()).chatgptModel,'test-fast-mini');
   await f.router.command('chatgpt-usage');assert.equal(f.calls.at(-1),'https://chatgpt.com/settings/usage');
 });
+
+// Exercise the real asynchronous OAuth callback rather than a stub whose signIn
+// incorrectly waits for login completion. All remote endpoints stay synthetic.
+let signingKeys;
+async function loginFixture(t,{modelsFail=false,modelsEmpty=false,sharing=true}={}){
+  const {generateKeyPair,exportJWK,SignJWT}=await import('jose');
+  signingKeys ||= await generateKeyPair('RS256');
+  const jwk=await exportJWK(signingKeys.publicKey);jwk.kid='router-test';
+  let authorize,modelCalls=0;
+  const changes=[],remoteFetch=globalThis.fetch;
+  const controls={modelsFail,modelsEmpty,sharing};
+  t.mock.method(globalThis,'fetch',async(url,init)=>{
+    const address=String(url);
+    if(address.startsWith('http://127.0.0.1:'))return remoteFetch(url,init);
+    const json=value=>new Response(JSON.stringify(value),{headers:{'Content-Type':'application/json'}});
+    if(address.endsWith('/.well-known/jwks.json'))return json({keys:[jwk]});
+    if(address.endsWith('/oauth/token')){
+      const token=await new SignJWT({nonce:authorize.searchParams.get('nonce')}).setProtectedHeader({alg:'RS256',kid:'router-test'})
+        .setIssuer('https://auth.openai.com').setAudience('oaiapp_router_test').setSubject('router-user').setIssuedAt().setExpirationTime('1h').sign(signingKeys.privateKey);
+      return json({access_token:'synthetic-access',refresh_token:'synthetic-refresh',id_token:token,token_type:'Bearer',expires_in:3600,
+        scope:`openid profile email offline_access resource.invoke${controls.sharing?' chatgpt.tokens.use.direct':''}`});
+    }
+    if(address.endsWith('/models')){
+      modelCalls++;
+      if(controls.modelsFail)return new Response('{}',{status:503});
+      return json({models:controls.modelsEmpty?[]:[{slug:'callback-mini',display_name:'Callback model',visibility:'list'}]});
+    }
+    throw new Error(`Unexpected network request: ${address}`);
+  });
+  const f=await fixture(t,{chatgpt:undefined,encryption:{isEncryptionAvailable:()=>true,encryptString:text=>Buffer.from(text),decryptString:data=>data.toString()},
+    openExternal:async url=>{authorize=new URL(url);},onChange:state=>changes.push(state)});
+  await f.router.command('chatgpt-sign-in',{enableSharing:true});
+  assert.equal((await f.router.getState()).chatgpt.connected,false,'opening a browser is not login completion');
+  const callback=new URL(authorize.searchParams.get('redirect_uri'));
+  callback.search=new URLSearchParams({state:authorize.searchParams.get('state'),code:'synthetic-code',client_id:'oaiapp_router_test'});
+  assert.equal((await remoteFetch(callback)).status,200);
+  return {...f,changes,controls,get modelCalls(){return modelCalls;}};
+}
+async function eventually(check){
+  for(let i=0;i<100;i++){if(await check())return;await new Promise(resolve=>setTimeout(resolve,10));}
+  assert.fail('Expected state update did not arrive');
+}
+
+test('OAuth callback refreshes available models in UI without a test or start command',async t=>{
+  const f=await loginFixture(t);
+  await eventually(()=>f.changes.some(state=>state.chatgpt.models.some(model=>model.id==='callback-mini')));
+  assert.equal(f.modelCalls,1,'model-list notifications must not recursively fetch models');
+  await f.router.ensureReady(normalizeSettings({}));
+  assert.equal(f.modelCalls,1);
+});
+
+test('catalog failure is visible, does not loop, and a user start can retry',async t=>{
+  const f=await loginFixture(t,{modelsFail:true});
+  await eventually(()=>f.changes.some(state=>/模型列表/.test(state.chatgpt.error||'')));
+  assert.equal(f.modelCalls,1);
+  f.controls.modelsFail=false;
+  await f.router.ensureReady(normalizeSettings({}));
+  assert.equal(f.modelCalls,2);
+  assert.equal((await f.router.getState()).chatgpt.error,'');
+});
+
+test('login without plan-sharing permission does not fetch models or require an API key',async t=>{
+  const f=await loginFixture(t,{sharing:false});
+  await eventually(()=>f.changes.some(state=>state.chatgpt.connected&&!state.chatgpt.signingIn));
+  assert.equal(f.modelCalls,0);
+  await assert.rejects(f.router.ensureReady(normalizeSettings({})),/授权/);
+});
+
+test('API route uses configured chat and speech endpoints without ChatGPT or local speech',async t=>{
+  const f=await fixture(t),requests=[];
+  f.state.connected=false;f.speechState.cached=false;f.speechState.status='idle';
+  t.mock.method(globalThis,'fetch',async(url,init)=>{
+    requests.push({url,init});
+    return new Response(JSON.stringify(String(url).endsWith('/chat/completions')?
+      {choices:[{message:{content:JSON.stringify({action:'wait',text:'',reason:'听主播说',scene:'chat',respondsToSelf:false,confidence:.8})}}]}:
+      {text:'来自自选 API 的转写'}),{headers:{'Content-Type':'application/json'}});
+  });
+  const settings=normalizeSettings({chat:{baseUrl:'https://chat.example/v1',apiKey:'synthetic-chat-key',model:'chat-model'},
+    transcription:{baseUrl:'https://speech.example/v1',apiKey:'synthetic-speech-key',model:'speech-model'}});
+  await f.router.command('ai-set-mode',{mode:'api'});
+  await f.router.ensureReady(settings);
+  assert.equal((await f.router.generate(settings,[])).action,'wait');
+  assert.equal(await f.router.transcribe(settings,new Blob(['wave'],{type:'audio/wav'})),'来自自选 API 的转写');
+  assert.equal(requests[0].url,'https://chat.example/v1/chat/completions');
+  assert.equal(requests[0].init.headers.Authorization,'Bearer synthetic-chat-key');
+  assert.equal(JSON.parse(requests[0].init.body).model,'chat-model');
+  assert.equal(requests[1].url,'https://speech.example/v1/audio/transcriptions');
+  assert.equal(requests[1].init.headers.Authorization,'Bearer synthetic-speech-key');
+  assert.equal(requests[1].init.body.get('model'),'speech-model');
+  assert.equal(f.calls.length,0);
+});
+
+
+test('an initially empty catalog can be retried explicitly after models become available',async t=>{
+  const f=await loginFixture(t,{modelsEmpty:true});
+  await eventually(()=>f.modelCalls===1);
+  await assert.rejects(f.router.ensureReady(normalizeSettings({})),/没有可用模型/);
+  f.controls.modelsEmpty=false;
+  await f.router.ensureReady(normalizeSettings({}));
+  assert.equal((await f.router.getState()).chatgptModel,'callback-mini');
+});
+
+for(const cached of [false,true])test(`concurrent first readiness checks share default-model persistence (${cached?'cached':'pending'} catalog)`,async t=>{
+  const f=await fixture(t);
+  if(!cached){
+    f.state.models=[];
+    f.chatgpt.listModels=async()=>{
+      await new Promise(resolve=>setImmediate(resolve));
+      return [{id:'test-fast-mini',name:'Test Fast'}];
+    };
+  }
+  const results=await Promise.allSettled([f.router.ensureReady(normalizeSettings({})),f.router.ensureReady(normalizeSettings({}))]);
+  assert.deepEqual(results.map(result=>result.status),['fulfilled','fulfilled']);
+  assert.equal((await f.router.getState()).chatgptModel,'test-fast-mini');
+  assert.equal(JSON.parse(await readFile(join(f.directory,'ai-settings.json'),'utf8')).chatgptModel,'test-fast-mini');
+});

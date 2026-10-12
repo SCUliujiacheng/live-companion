@@ -17,8 +17,10 @@ const roomPending=new Map(),capturePending=new Map();
 let captureSession=null,roomState={url:'',title:'',loading:false,loggedIn:null};
 protocol.registerSchemesAsPrivileged([{scheme:'companion',privileges:{standard:true,secure:true,supportFetchAPI:true,corsEnabled:true,stream:true}}]);
 app.setName('直播搭子');
-// Tests use a disposable profile; packaged applications never honor this switch.
-if(!app.isPackaged&&process.env.LIVE_COMPANION_TEST_USER_DATA)app.setPath('userData',process.env.LIVE_COMPANION_TEST_USER_DATA);
+// Package acceptance uses a fresh profile and no remote page. Both a launch
+// switch and an environment opt-in are required; no IPC privileges are added.
+const packageSmoke=process.env.LIVE_COMPANION_PACKAGE_SMOKE==='1'&&Boolean(process.argv?.includes('--package-smoke'))&&isAbsolute(process.env.LIVE_COMPANION_TEST_USER_DATA||'');
+if((!app.isPackaged||packageSmoke)&&process.env.LIVE_COMPANION_TEST_USER_DATA)app.setPath('userData',process.env.LIVE_COMPANION_TEST_USER_DATA);
 if(!app.requestSingleInstanceLock())app.quit();
 else {
   app.on('second-instance',()=>{if(win){if(win.isMinimized())win.restore();win.show();win.focus();}});
@@ -179,6 +181,6 @@ async function boot(){
   await win.loadURL(UI_URL);
   win.show();
   // A login session is scoped to this app; no existing browser profile is copied.
-  await liveView.webContents.loadURL('https://www.bilibili.com/').catch(()=>status({loading:false,error:'请检查网络后打开直播间'}));
+  await liveView.webContents.loadURL(packageSmoke?'about:blank':'https://www.bilibili.com/').catch(()=>status({loading:false,error:'请检查网络后打开直播间'}));
 }
 app.on('window-all-closed',()=>app.quit());
